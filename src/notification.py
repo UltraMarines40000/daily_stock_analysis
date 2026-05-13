@@ -270,16 +270,20 @@ class NotificationService(
             return None
         return f"{{{code}, {price}, {shares}}}"
 
-    def _collect_trade_order_lines(self, results: List[AnalysisResult]) -> Optional[tuple[List[str], List[str]]]:
+    def _collect_trade_order_lines(self, results: List[AnalysisResult]) -> Optional[tuple[List[str], List[str], List[str]]]:
         seen_trade_plan = False
         buy_lines: List[str] = []
         sell_lines: List[str] = []
+        reason_lines: List[str] = []
         for result in results or []:
             dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
             trade_plan = dashboard.get("trade_plan")
             if not isinstance(trade_plan, dict):
                 continue
             seen_trade_plan = True
+            reason_text = str(trade_plan.get("reason_text") or "").strip()
+            if reason_text:
+                reason_lines.extend(line.strip() for line in reason_text.splitlines() if line.strip())
             for order in trade_plan.get("buy_list") or []:
                 line = self._format_trade_order(order)
                 if line:
@@ -290,7 +294,12 @@ class NotificationService(
                     sell_lines.append(line)
         if not seen_trade_plan:
             return None
-        return buy_lines, sell_lines
+        if not reason_lines:
+            for result in results or []:
+                summary = str(getattr(result, "analysis_summary", "") or "").strip()
+                if summary:
+                    reason_lines.extend(line.strip() for line in summary.splitlines() if line.strip())
+        return buy_lines, sell_lines, reason_lines
 
     def _generate_trade_order_report(
         self,
@@ -300,7 +309,7 @@ class NotificationService(
         collected = self._collect_trade_order_lines(results)
         if collected is None:
             return None
-        buy_lines, sell_lines = collected
+        buy_lines, sell_lines, reason_lines = collected
         lines = ["买入列表:"]
         if buy_lines:
             lines.extend(f"- {line}" for line in buy_lines)
@@ -312,6 +321,12 @@ class NotificationService(
             lines.extend(f"- {line}" for line in sell_lines)
         else:
             lines.append("[]")
+        lines.append("")
+        lines.append("决策理由:")
+        if reason_lines:
+            lines.extend(line if line.startswith("-") else f"- {line}" for line in reason_lines)
+        else:
+            lines.append("- 模型未提供决策理由，请检查 LLM 原始响应与解析日志。")
         return "\n".join(lines)
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:

@@ -244,7 +244,11 @@ def _extract_named_trade_section(content: str, headings: List[str], stop_heading
     return match.group(1) if match else None
 
 
-def format_trade_order_content(buy_list: List[Dict[str, Any]], sell_list: List[Dict[str, Any]]) -> str:
+def format_trade_order_content(
+    buy_list: List[Dict[str, Any]],
+    sell_list: List[Dict[str, Any]],
+    reason_text: str = "",
+) -> str:
     """Format parsed trade orders into the user-facing two-section output."""
 
     def _fmt(order: Dict[str, Any]) -> str:
@@ -252,7 +256,19 @@ def format_trade_order_content(buy_list: List[Dict[str, Any]], sell_list: List[D
 
     buy_lines = [_fmt(order) for order in buy_list] or ["[]"]
     sell_lines = [_fmt(order) for order in sell_list] or ["[]"]
-    return "买入列表:\n" + "\n".join(buy_lines) + "\n\n卖出列表:\n" + "\n".join(sell_lines)
+    reason_lines = [line.strip() for line in str(reason_text or "").splitlines() if line.strip()]
+    if not reason_lines:
+        reason_lines = ["- 未提供决策理由"]
+    else:
+        reason_lines = [line if line.startswith("-") else f"- {line}" for line in reason_lines]
+    return (
+        "买入列表:\n"
+        + "\n".join(buy_lines)
+        + "\n\n卖出列表:\n"
+        + "\n".join(sell_lines)
+        + "\n\n决策理由:\n"
+        + "\n".join(reason_lines)
+    )
 
 
 def build_trade_plan_dashboard(
@@ -261,6 +277,7 @@ def build_trade_plan_dashboard(
     *,
     stock_code: str = "",
     stock_name: str = "",
+    reason_text: str = "",
 ) -> Dict[str, Any]:
     """Wrap trade orders in the dashboard shape expected by the existing pipeline."""
     if sell_list:
@@ -279,7 +296,7 @@ def build_trade_plan_dashboard(
         score = 50
         trend = "震荡"
 
-    summary = format_trade_order_content(buy_list, sell_list)
+    summary = format_trade_order_content(buy_list, sell_list, reason_text)
     return {
         "stock_name": stock_name or stock_code,
         "sentiment_score": score,
@@ -291,6 +308,7 @@ def build_trade_plan_dashboard(
             "trade_plan": {
                 "buy_list": buy_list,
                 "sell_list": sell_list,
+                "reason_text": reason_text,
             },
             "core_conclusion": {
                 "one_sentence": operation_advice,
@@ -325,18 +343,25 @@ def parse_trade_order_text(
     sell_section = _extract_named_trade_section(
         content,
         ["卖出列表", "Sell List", "Sell list"],
-        ["买入列表", "Buy List", "Buy list"],
+        ["买入列表", "Buy List", "Buy list", "决策理由", "Decision Rationale"],
+    )
+    reason_section = _extract_named_trade_section(
+        content,
+        ["决策理由", "Decision Rationale"],
+        ["买入列表", "Buy List", "Buy list", "卖出列表", "Sell List", "Sell list"],
     )
     if buy_section is None or sell_section is None:
         return None
 
     buy_list = _extract_trade_orders(buy_section)
     sell_list = _extract_trade_orders(sell_section)
+    reason_text = (reason_section or "").strip()
     return build_trade_plan_dashboard(
         buy_list,
         sell_list,
         stock_code=stock_code,
         stock_name=stock_name,
+        reason_text=reason_text,
     )
 
 

@@ -79,8 +79,8 @@ You will receive:
    output the reasoning.
 
 ## Final Output
-Output only these two sections. Do not output JSON, markdown code fences, analysis,
-or explanations.
+Output only these three sections. Do not output JSON, markdown code fences, or
+extra report text.
 
 买入列表:
 - {{股票代码, 委托价格, 下单股数}}
@@ -88,11 +88,15 @@ or explanations.
 卖出列表:
 - {{股票代码, 委托价格, 下单股数}}
 
+决策理由:
+- For every buy/sell order, explain the stock-specific reason.
+- If a buy/sell section is empty, explain why it is empty.
+
 If there is no buy or sell action, write [] for that section.
 """
         if report_language == "en":
-            return trade_prompt + "\nUse English headings `Buy List:` and `Sell List:` if the caller requested English.\n"
-        return trade_prompt + "\n使用中文固定标题 `买入列表:` 和 `卖出列表:`。\n"
+            return trade_prompt + "\nUse English headings `Buy List:`, `Sell List:`, and `Decision Rationale:` if the caller requested English.\n"
+        return trade_prompt + "\n使用中文固定标题 `买入列表:`、`卖出列表:` 和 `决策理由:`。\n"
 
         prompt = f"""\
 You are a **Decision Synthesis Agent** that produces the final investment \
@@ -217,8 +221,8 @@ new decision_type values.
             )
         else:
             parts.append(
-                "Synthesise the above into the final trade order lists only: 买入列表 and 卖出列表. "
-                "Do not output JSON or analysis text."
+                "Synthesise the above into the final trade order lists only: 买入列表, 卖出列表, and 决策理由. "
+                "Do not output JSON or extra report text."
             )
         return "\n".join(parts)
 

@@ -57,7 +57,7 @@ TRADE_ORDER_AGENT_SYSTEM_PROMPT = """你是一位专业的{market_role}投资交
 2. 买入必须结合总投资金额、已有持仓和当前价格控制仓位；A 股下单股数必须为 100 股整数倍，预算不足 100 股时买入列表为空。
 3. 卖出只能针对“持仓详情”中已经持有的股票，且下单股数不得超过持有股数。
 4. 委托价格必须是具体数字，不能写“市价”“附近”“区间”或解释性文字。
-5. 最终响应只允许输出买入列表和卖出列表，不要输出 JSON，不要输出 Markdown 代码块，不要输出分析理由。
+5. 最终响应只允许输出买入列表、卖出列表和决策理由，不要输出 JSON，不要输出 Markdown 代码块。
 
 {skills_section}
 
@@ -68,6 +68,10 @@ TRADE_ORDER_AGENT_SYSTEM_PROMPT = """你是一位专业的{market_role}投资交
 
 卖出列表:
 - {{股票代码, 委托价格, 下单股数}}
+
+决策理由:
+- 对每个买入/卖出股票逐条说明理由。
+- 如果买入列表或卖出列表为空，也必须说明为什么为空。
 
 没有买入或卖出时，对应列表输出 []。
 
@@ -453,17 +457,19 @@ def _build_language_section(report_language: str, *, chat_mode: bool = False) ->
         return """
 ## Output Language
 
-- Use the exact headings `Buy List:` and `Sell List:`.
-- Do not output JSON, code fences, analysis text, or explanations.
+- Use the exact headings `Buy List:`, `Sell List:`, and `Decision Rationale:`.
+- Do not output JSON, code fences, or extra report text.
 - Empty buy/sell decisions must be written as `[]`.
+- Every order and every empty list must have a reason in `Decision Rationale:`.
 """
 
     return """
 ## 输出语言
 
-- 使用固定标题 `买入列表:` 和 `卖出列表:`。
-- 不要输出 JSON、代码块、分析文字或解释。
+- 使用固定标题 `买入列表:`、`卖出列表:` 和 `决策理由:`。
+- 不要输出 JSON、代码块或额外报告正文。
 - 没有买入或卖出时，对应列表写 `[]`。
+- 每个委托和每个空列表都必须在 `决策理由:` 中说明原因。
 """
 
     if normalized == "en":
@@ -725,7 +731,7 @@ class AgentExecutor:
             else:
                 parts.append("输出语言: 中文（使用买入列表/卖出列表标题，不输出 JSON）")
 
-            parts.append("最终输出只允许包含 `买入列表:` 与 `卖出列表:`，不要输出 JSON。")
+            parts.append("最终输出只允许包含 `买入列表:`、`卖出列表:` 与 `决策理由:`，不要输出 JSON。")
 
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):
@@ -735,5 +741,5 @@ class AgentExecutor:
             if context.get("news_context"):
                 parts.append(f"\n[系统已获取的新闻与舆情情报]\n{context['news_context']}")
 
-        parts.append("\n请使用可用工具获取缺失的数据（如历史 K 线、新闻、情报和筹码信息），然后只输出交易委托清单：买入列表与卖出列表。")
+        parts.append("\n请使用可用工具获取缺失的数据（如历史 K 线、新闻、情报和筹码信息），然后只输出交易委托清单：买入列表、卖出列表与决策理由。")
         return "\n".join(parts)

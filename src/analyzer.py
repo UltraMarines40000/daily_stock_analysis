@@ -863,8 +863,12 @@ class GeminiAnalyzer:
 卖出列表:
 - {股票代码, 委托价格, 下单股数}
 
+决策理由:
+- 股票代码/空列表项：理由
+
 没有买入或卖出时，对应列表输出 []。
-不要输出 JSON、代码块、分析过程、评分、解释或报告正文。"""
+即使买入或卖出列表为空，也必须在“决策理由”中说明为空的原因。
+不要输出 JSON、代码块、评分或报告正文。"""
 
     SYSTEM_PROMPT = """你是一位专业的{market_placeholder}投资交易员，不是泛泛的投资分析师。
 
@@ -883,8 +887,12 @@ class GeminiAnalyzer:
 卖出列表:
 - {股票代码, 委托价格, 下单股数}
 
+决策理由:
+- 股票代码/空列表项：理由
+
 没有买入或卖出时，对应列表输出 []。
-不要输出 JSON、代码块、分析过程、评分、解释或报告正文。"""
+即使买入或卖出列表为空，也必须在“决策理由”中说明为空的原因。
+不要输出 JSON、代码块、评分或报告正文。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 
@@ -978,8 +986,8 @@ class GeminiAnalyzer:
 {skills_section}
 Your job is to convert market data, technical signals, holdings, capital constraints, and fresh searched information into executable limit-order suggestions.
 
-Output plain text only. Do not output JSON, Markdown code fences, explanations, ratings, dashboards, or risk commentary.
-Use exactly these two sections:
+Output plain text only. Do not output JSON, Markdown code fences, ratings, or dashboards.
+Use exactly these three sections:
 
 Buy List:
 - {{stock code, limit price, order shares}}
@@ -987,7 +995,11 @@ Buy List:
 Sell List:
 - {{stock code, limit price, order shares}}
 
-If there is no buy or sell order, output an empty list under that section as [].
+Decision Rationale:
+- For every buy/sell order, provide the stock-specific reason.
+- If a list is empty, explain why it is empty.
+
+If there is no buy or sell order, output an empty list under that section as [], but still include Decision Rationale.
 Only output orders with concrete numeric price and share count. Never invent missing prices."""
 
         return f"""你是一位专业的{market_role}投资交易员，不再是泛泛的投资分析师。
@@ -997,14 +1009,18 @@ Only output orders with concrete numeric price and share count. Never invent mis
 {skills_section}
 你的任务是把行情、技术信号、持仓、总资金约束和最新搜索情报转化为可执行的限价委托建议。
 
-只输出纯文本。不要输出 JSON，不要输出 Markdown 代码块，不要输出分析过程、评分、仪表盘、理由或风险说明。
-必须严格使用下面两个区块：
+只输出纯文本。不要输出 JSON，不要输出 Markdown 代码块，不要输出评分或仪表盘。
+必须严格使用下面三个区块：
 
 买入列表:
 - {{股票代码, 委托价格, 下单股数}}
 
 卖出列表:
 - {{股票代码, 委托价格, 下单股数}}
+
+决策理由:
+- 对每个买入/卖出股票逐条说明理由。
+- 如果买入列表或卖出列表为空，也必须说明为什么为空。
 
 如果没有买入或卖出，区块内容输出 []。
 只允许输出有明确数字价格和股数的委托；价格缺失时不得编造。"""
@@ -1767,7 +1783,11 @@ Buy List:
 Sell List:
 - {{stock code, limit price, order shares}}
 
-Use [] for empty sections. Do not output JSON or explanations."""
+Decision Rationale:
+- For each buy/sell order, explain the stock-specific reason.
+- If Buy List or Sell List is empty, explain why it is empty.
+
+Use [] for empty buy/sell sections. Do not output JSON."""
 
         return f"""# 全局交易决策请求
 
@@ -1794,7 +1814,11 @@ Use [] for empty sections. Do not output JSON or explanations."""
 卖出列表:
 - {{股票代码, 委托价格, 下单股数}}
 
-没有买入或卖出时输出 []。不要输出 JSON、解释、排序过程或分析理由。"""
+决策理由:
+- 对每个买入/卖出股票逐条说明理由。
+- 如果买入列表或卖出列表为空，也必须说明为什么为空。
+
+没有买入或卖出时，对应列表输出 []。不要输出 JSON、排序过程或额外报告正文。"""
     
     def _format_prompt(
         self, 
@@ -2154,8 +2178,12 @@ Use [] for empty sections. Do not output JSON or explanations."""
 卖出列表:
 - {{{code}, 委托价格, 下单股数}}
 
+决策理由:
+- 对每个买入/卖出股票逐条说明理由。
+- 如果买入列表或卖出列表为空，也必须说明为什么为空。
+
 没有买入或卖出时，该区块只输出 []。
-除以上两个区块外，不得输出任何其他文字。"""
+除以上三个区块外，不得输出任何其他文字。"""
 
         if report_language == "en":
             prompt += """
@@ -2163,6 +2191,7 @@ Use [] for empty sections. Do not output JSON or explanations."""
 ### Output language requirements (highest priority)
 - Use the section titles `Buy List:` and `Sell List:`.
 - Do not output JSON.
+- Include `Decision Rationale:` and explain every order or empty list.
 """
         else:
             prompt += f"""
@@ -2171,6 +2200,7 @@ Use [] for empty sections. Do not output JSON or explanations."""
 - 使用区块标题 `买入列表:` 和 `卖出列表:`。
 - 不要输出 JSON。
 - 当数据缺失导致无法形成明确价格或股数时，对应区块输出 []。
+- 必须包含 `决策理由:`，逐条解释每个委托；如果列表为空，也要解释为空原因。
 """
         
         return prompt
@@ -2362,12 +2392,17 @@ Use [] for empty sections. Do not output JSON or explanations."""
     ) -> Optional[AnalysisResult]:
         text = (response_text or "").replace("```", "").strip()
         buy_match = re.search(
-            r"(?:买入列表|Buy List)\s*[:：]\s*(.*?)(?=(?:卖出列表|Sell List)\s*[:：]|$)",
+            r"(?:买入列表|Buy List)\s*[:：]\s*(.*?)(?=(?:卖出列表|Sell List|决策理由|Decision Rationale)\s*[:：]|$)",
             text,
             flags=re.IGNORECASE | re.DOTALL,
         )
         sell_match = re.search(
-            r"(?:卖出列表|Sell List)\s*[:：]\s*(.*)$",
+            r"(?:卖出列表|Sell List)\s*[:：]\s*(.*?)(?=(?:决策理由|Decision Rationale)\s*[:：]|$)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        reason_match = re.search(
+            r"(?:决策理由|Decision Rationale)\s*[:：]\s*(.*)$",
             text,
             flags=re.IGNORECASE | re.DOTALL,
         )
@@ -2376,6 +2411,7 @@ Use [] for empty sections. Do not output JSON or explanations."""
 
         buy_orders = self._extract_trade_orders(buy_match.group(1) if buy_match else "")
         sell_orders = self._extract_trade_orders(sell_match.group(1) if sell_match else "")
+        reason_text = reason_match.group(1).strip() if reason_match else ""
         if buy_orders:
             decision_type = "buy"
             advice = "Buy" if report_language == "en" else "买入"
@@ -2393,9 +2429,10 @@ Use [] for empty sections. Do not output JSON or explanations."""
             "trade_plan": {
                 "buy_list": buy_orders,
                 "sell_list": sell_orders,
+                "reason_text": reason_text,
             },
             "core_conclusion": {
-                "one_sentence": text,
+                "one_sentence": reason_text or text,
             },
             "intelligence": {
                 "risk_alerts": [],
@@ -2421,6 +2458,9 @@ Use [] for empty sections. Do not output JSON or explanations."""
             raise ValueError("No buy-list section found in LLM response")
         if not re.search(r"(卖出列表|Sell List)\s*[:：]", text or "", re.IGNORECASE):
             raise ValueError("No sell-list section found in LLM response")
+        reason_match = re.search(r"(决策理由|Decision Rationale)\s*[:：]\s*(.*)$", text or "", re.IGNORECASE | re.DOTALL)
+        if not reason_match or not reason_match.group(2).strip():
+            raise ValueError("No non-empty decision-rationale section found in LLM response")
 
     def _parse_response(
         self, 
