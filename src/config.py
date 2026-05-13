@@ -640,7 +640,7 @@ class Config:
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
     popular_stock_auto_enabled: bool = True
-    popular_stock_limit: int = 5
+    popular_stock_limit: int = 0
 
     # === 交易账户配置 ===
     total_investment_amount: int = 0
@@ -1366,12 +1366,12 @@ class Config:
             popular_stock_limit=parse_env_int(
                 cls._resolve_env_value(
                     'POPULAR_STOCK_LIMIT',
-                    default='5',
+                    default='0',
                     prefer_env_file=True,
                 ),
-                5,
+                0,
                 field_name='POPULAR_STOCK_LIMIT',
-                minimum=1,
+                minimum=0,
                 maximum=100,
             ),
             total_investment_amount=parse_env_int(
@@ -2270,9 +2270,13 @@ class Config:
         if not auto_enabled:
             raise RuntimeError("POPULAR_STOCK_AUTO_ENABLED=false，但手动股票池回退已禁用；请启用东方财富人气榜自动股票池")
 
+        raw_limit = os.getenv('POPULAR_STOCK_LIMIT')
+        if raw_limit is None or not str(raw_limit).strip():
+            raise RuntimeError("缺少必填 Secret: POPULAR_STOCK_LIMIT。请在 GitHub Actions secrets 中配置要分析的人气榜股票数量")
+
         limit = parse_env_int(
-            os.getenv('POPULAR_STOCK_LIMIT'),
-            getattr(self, "popular_stock_limit", 5),
+            raw_limit,
+            getattr(self, "popular_stock_limit", 0),
             field_name='POPULAR_STOCK_LIMIT',
             minimum=1,
             maximum=100,
@@ -2311,6 +2315,12 @@ class Config:
                 severity="error",
                 message="POPULAR_STOCK_AUTO_ENABLED=false，但手动股票池回退已禁用",
                 field="POPULAR_STOCK_AUTO_ENABLED",
+            ))
+        elif self.popular_stock_limit <= 0:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="缺少必填配置 POPULAR_STOCK_LIMIT，请通过 GitHub Actions Secret 指定人气榜股票数量",
+                field="POPULAR_STOCK_LIMIT",
             ))
         elif self.stock_email_groups and self.stock_list:
             from data_provider.base import normalize_stock_code

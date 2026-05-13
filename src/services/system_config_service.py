@@ -2315,7 +2315,17 @@ class SystemConfigService:
                 "POPULAR_STOCK_AUTO_ENABLED 已关闭，但手动股票池回退已禁用。",
                 "请启用 POPULAR_STOCK_AUTO_ENABLED=true。",
             )
-        limit = (effective_map.get("POPULAR_STOCK_LIMIT") or "100").strip() or "100"
+        limit = (effective_map.get("POPULAR_STOCK_LIMIT") or "").strip()
+        if not limit:
+            return self._setup_check(
+                "popular_stock_pool",
+                "自动股票池",
+                "base",
+                True,
+                "needs_action",
+                "缺少必填 Secret: POPULAR_STOCK_LIMIT。",
+                "请在 GitHub Actions secrets 中配置要分析的人气榜股票数量，例如 5。",
+            )
         return self._setup_check(
             "popular_stock_pool",
             "自动股票池",
