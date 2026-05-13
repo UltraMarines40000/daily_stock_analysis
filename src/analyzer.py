@@ -1629,6 +1629,8 @@ Only output orders with concrete numeric price and share count. Never invent mis
             logger.debug("=== 全局交易 Prompt ===\n%s\n=== End Prompt ===", prompt)
             _emit_progress(72, f"{name}：正在请求 LLM 做全局资金分配")
 
+            start_time = time.time()
+            logger.info("[LLM调用] 全局交易决策开始调用模型...")
             response_text, model_used, llm_usage = self._call_litellm(
                 prompt,
                 generation_config,
@@ -1636,6 +1638,21 @@ Only output orders with concrete numeric price and share count. Never invent mis
                 stream=True,
                 stream_progress_callback=stream_progress_callback,
                 response_validator=self._validate_trade_order_response,
+            )
+            elapsed = time.time() - start_time
+            response_preview = response_text[:500] + "..." if len(response_text) > 500 else response_text
+            logger.info(
+                "[LLM返回] 全局交易决策响应成功: model=%s, 耗时=%.2fs, 响应长度=%d 字符, usage=%s",
+                model_used or "unknown",
+                elapsed,
+                len(response_text),
+                llm_usage or {},
+            )
+            logger.info("[LLM返回 预览]\n%s", response_preview)
+            logger.debug(
+                "=== 全局交易 LLM 完整响应 (%d 字符) ===\n%s\n=== End Response ===",
+                len(response_text),
+                response_text,
             )
             result = self._parse_trade_order_response(
                 response_text,
@@ -1649,6 +1666,15 @@ Only output orders with concrete numeric price and share count. Never invent mis
             result.search_performed = any(bool(item.get("news_context")) for item in candidates)
             result.model_used = model_used
             result.report_language = report_language
+            trade_plan = result.dashboard.get("trade_plan") if isinstance(result.dashboard, dict) else {}
+            buy_count = len(trade_plan.get("buy_list") or []) if isinstance(trade_plan, dict) else 0
+            sell_count = len(trade_plan.get("sell_list") or []) if isinstance(trade_plan, dict) else 0
+            logger.info(
+                "[LLM解析] 全局交易委托解析完成: buy_count=%d, sell_count=%d, decision_type=%s",
+                buy_count,
+                sell_count,
+                result.decision_type,
+            )
             persist_llm_usage(llm_usage, model_used, call_type="global_trade_plan", stock_code="GLOBAL")
             return result
         except Exception as e:

@@ -640,7 +640,7 @@ class Config:
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
     popular_stock_auto_enabled: bool = True
-    popular_stock_limit: int = 100
+    popular_stock_limit: int = 5
 
     # === 交易账户配置 ===
     total_investment_amount: int = 0
@@ -1366,10 +1366,10 @@ class Config:
             popular_stock_limit=parse_env_int(
                 cls._resolve_env_value(
                     'POPULAR_STOCK_LIMIT',
-                    default='100',
+                    default='5',
                     prefer_env_file=True,
                 ),
-                100,
+                5,
                 field_name='POPULAR_STOCK_LIMIT',
                 minimum=1,
                 maximum=100,
@@ -2272,7 +2272,7 @@ class Config:
 
         limit = parse_env_int(
             os.getenv('POPULAR_STOCK_LIMIT'),
-            getattr(self, "popular_stock_limit", 100),
+            getattr(self, "popular_stock_limit", 5),
             field_name='POPULAR_STOCK_LIMIT',
             minimum=1,
             maximum=100,

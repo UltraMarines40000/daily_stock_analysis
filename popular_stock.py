@@ -91,7 +91,7 @@ def normalize_eastmoney_stock_code(raw_code):
     return code
 
 
-def get_eastmoney_popularity_top100(limit=100):
+def get_eastmoney_popularity_top100(limit=5):
     params = get_dynamic_params()
     if not params:
         return None
@@ -118,7 +118,7 @@ def get_eastmoney_popularity_top100(limit=100):
     return format_dataframe(df, mapping)
 
 
-def get_eastmoney_popularity_codes(limit=100):
+def get_eastmoney_popularity_codes(limit=5):
     df = get_eastmoney_popularity_top100(limit=limit)
     if df is None or df.empty or "股票代码" not in df.columns:
         return []
@@ -181,7 +181,7 @@ if __name__ == "__main__":
     print("="*50)
     df1 = get_eastmoney_popularity_top100()
     if df1 is not None:
-        print("人气榜前100名")
+        print(f"人气榜前{len(result)}名")
         print(df1.to_string(index=False))
 
     print("="*50)
