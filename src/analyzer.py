@@ -1780,18 +1780,11 @@ You must make one global decision across all candidates. Do not decide stock by 
 - Sell orders may only use stocks in holding details and must not exceed held shares.
 - Output concrete limit prices and share counts only.
 
-## Final output only
-Buy List:
-- {{stock code, limit price, order shares}}
-
-Sell List:
-- {{stock code, limit price, order shares}}
-
-Decision Rationale:
-- For each buy/sell order, explain the stock-specific reason.
-- If Buy List or Sell List is empty, explain why it is empty.
-
-Use [] for empty buy/sell sections. Do not output JSON."""
+## Final output
+Return the final trading plan as plain text in your own structure. Do not output JSON.
+Include concrete buy orders, concrete sell orders, and the rationale for every action or non-action.
+Each order must include stock code, limit price, and order shares.
+If there is no buy or no sell action, state that directly and explain why."""
 
         return f"""# 全局交易决策请求
 
@@ -1811,18 +1804,11 @@ Use [] for empty buy/sell sections. Do not output JSON."""
 - 卖出只能针对持仓详情中已有股票，卖出股数不得超过持有股数。
 - 委托价格和下单股数必须是明确数字。
 
-## 最终只输出
-买入列表:
-- {{股票代码, 委托价格, 下单股数}}
-
-卖出列表:
-- {{股票代码, 委托价格, 下单股数}}
-
-决策理由:
-- 对每个买入/卖出股票逐条说明理由。
-- 如果买入列表或卖出列表为空，也必须说明为什么为空。
-
-没有买入或卖出时，对应列表输出 []。不要输出 JSON、排序过程或额外报告正文。"""
+## 最终输出
+请用你自己的结构输出最终交易计划，不要输出 JSON。
+必须包含明确的买入委托、卖出委托，以及每个行动或不行动的理由。
+每条委托必须包含股票代码、委托价格、下单股数。
+如果没有买入或没有卖出，请直接说明没有对应操作并解释原因。"""
     
     def _format_prompt(
         self, 

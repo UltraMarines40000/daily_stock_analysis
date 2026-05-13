@@ -319,28 +319,14 @@ class NotificationService(
             if raw_content:
                 return raw_content
 
-        collected = self._collect_trade_order_lines(results)
-        if collected is None:
-            return None
-        buy_lines, sell_lines, reason_lines = collected
-        lines = ["买入列表:"]
-        if buy_lines:
-            lines.extend(f"- {line}" for line in buy_lines)
-        else:
-            lines.append("[]")
-        lines.append("")
-        lines.append("卖出列表:")
-        if sell_lines:
-            lines.extend(f"- {line}" for line in sell_lines)
-        else:
-            lines.append("[]")
-        lines.append("")
-        lines.append("决策理由:")
-        if reason_lines:
-            lines.extend(line if line.startswith("-") else f"- {line}" for line in reason_lines)
-        else:
-            lines.append("- 模型未提供决策理由，请检查 LLM 原始响应与解析日志。")
-        return "\n".join(lines)
+        for result in results or []:
+            raw_response = str(getattr(result, "raw_response", "") or "").strip()
+            if raw_response:
+                return raw_response
+            summary = str(getattr(result, "analysis_summary", "") or "").strip()
+            if summary:
+                return summary
+        return None
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         models: List[str] = []
