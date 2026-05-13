@@ -987,7 +987,6 @@ class Config:
     _VALID_SKILL_ROUTING = {"auto", "manual"}
     _WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS = frozenset(
         {
-            "STOCK_LIST",
             "RUN_IMMEDIATELY",
             "SCHEDULE_ENABLED",
             "SCHEDULE_TIME",
@@ -1099,21 +1098,9 @@ class Config:
                 os.environ['https_proxy'] = https_proxy
 
         
-        # 解析自选股列表（逗号分隔，统一为大写 Issue #355）
-        stock_list_str = cls._resolve_env_value(
-            'STOCK_LIST',
-            default='',
-            prefer_env_file=True,
-        )
-        stock_list = [
-            (c or "").strip().upper()
-            for c in stock_list_str.split(',')
-            if (c or "").strip()
-        ]
-        
-        # 如果没有配置，使用默认的示例股票
-        if not stock_list:
-            stock_list = ['600519', '000001', '300750']
+        # 股票池由 refresh_stock_list() 每次运行时从东方财富人气榜抓取。
+        # 不再读取手动股票池，也不再使用示例股票回退，避免静默跑错股票池。
+        stock_list: List[str] = []
         
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
@@ -2262,11 +2249,9 @@ class Config:
 
     def refresh_stock_list(self) -> None:
         """
-        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
-        
-        支持两种配置方式：
-        1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
-        2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
+        从东方财富人气榜刷新股票池。
+
+        不再支持手动股票池回退：自动抓取失败时直接抛错，让任务失败。
         """
         self.total_investment_amount = parse_env_int(
             os.getenv('TOTAL_INVESTMENT_AMOUNT'),
@@ -2282,50 +2267,28 @@ class Config:
             os.getenv('POPULAR_STOCK_AUTO_ENABLED'),
             getattr(self, "popular_stock_auto_enabled", True),
         )
-        if auto_enabled:
-            limit = parse_env_int(
-                os.getenv('POPULAR_STOCK_LIMIT'),
-                getattr(self, "popular_stock_limit", 100),
-                field_name='POPULAR_STOCK_LIMIT',
-                minimum=1,
-                maximum=100,
-            )
-            try:
-                from popular_stock import get_eastmoney_popularity_codes
+        if not auto_enabled:
+            raise RuntimeError("POPULAR_STOCK_AUTO_ENABLED=false，但手动股票池回退已禁用；请启用东方财富人气榜自动股票池")
 
-                popular_codes = get_eastmoney_popularity_codes(limit=limit)
-                if popular_codes:
-                    self.stock_list = popular_codes
-                    logger.info("已自动加载东方财富人气榜前 %s 名股票作为分析列表", len(popular_codes))
-                    return
-                logger.warning("东方财富人气榜返回空列表，回退到 STOCK_LIST")
-            except Exception as exc:
-                logger.warning("加载东方财富人气榜失败，回退到 STOCK_LIST: %s", exc)
+        limit = parse_env_int(
+            os.getenv('POPULAR_STOCK_LIMIT'),
+            getattr(self, "popular_stock_limit", 100),
+            field_name='POPULAR_STOCK_LIMIT',
+            minimum=1,
+            maximum=100,
+        )
+        try:
+            from popular_stock import get_eastmoney_popularity_codes
 
-        # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
-        # 也能获取到最新的股票列表配置
-        env_file = os.getenv("ENV_FILE")
-        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
-        stock_list_str = ''
-        if env_path.exists():
-            # 直接从 .env 文件读取最新的配置
-            env_values = dotenv_values(env_path)
-            stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
+            popular_codes = get_eastmoney_popularity_codes(limit=limit)
+        except Exception as exc:
+            raise RuntimeError(f"加载东方财富人气榜失败，任务终止: {exc}") from exc
 
-        # 如果 .env 文件不存在或未配置，才尝试从系统环境变量读取
-        if not stock_list_str:
-            stock_list_str = os.getenv('STOCK_LIST', '')
+        if not popular_codes:
+            raise RuntimeError("东方财富人气榜返回空股票池，任务终止")
 
-        stock_list = [
-            (c or "").strip().upper()
-            for c in stock_list_str.split(',')
-            if (c or "").strip()
-        ]
-
-        if not stock_list:
-            stock_list = ['000001']
-
-        self.stock_list = stock_list
+        self.stock_list = popular_codes
+        logger.info("已自动加载东方财富人气榜前 %s 名股票作为分析列表", len(popular_codes))
     
     def validate_structured(self) -> List[ConfigIssue]:
         """Return structured validation issues with severity levels.
@@ -2342,14 +2305,14 @@ class Config:
         """
         issues: List[ConfigIssue] = []
 
-        # --- Stock list ---
-        if not self.stock_list:
+        # --- Auto popularity stock pool ---
+        if not self.popular_stock_auto_enabled:
             issues.append(ConfigIssue(
                 severity="error",
-                message="未配置自选股列表 (STOCK_LIST)",
-                field="STOCK_LIST",
+                message="POPULAR_STOCK_AUTO_ENABLED=false，但手动股票池回退已禁用",
+                field="POPULAR_STOCK_AUTO_ENABLED",
             ))
-        elif self.stock_email_groups:
+        elif self.stock_email_groups and self.stock_list:
             from data_provider.base import normalize_stock_code
             configured_stock_set = {
                 normalize_stock_code(code)
@@ -2373,10 +2336,10 @@ class Config:
                 issues.append(ConfigIssue(
                     severity="warning",
                     message=(
-                        "检测到 STOCK_GROUP_N 中存在未包含在 STOCK_LIST 内的股票："
+                        "检测到 STOCK_GROUP_N 中存在未包含在当前自动股票池内的股票："
                         f"{', '.join(missing_group_stocks[:6])}。"
                         "STOCK_GROUP_N 仅用于邮件路由，不会扩大分析范围；"
-                        "请先将这些股票加入 STOCK_LIST。"
+                        "自动人气榜股票池不保证包含邮件分组中的固定股票。"
                     ),
                     field="STOCK_GROUP_N",
                 ))
@@ -2696,7 +2659,7 @@ if __name__ == "__main__":
     # 测试配置加载
     config = get_config()
     print("=== 配置加载测试 ===")
-    print(f"自选股列表: {config.stock_list}")
+    print(f"自动股票池: {config.stock_list}")
     print(f"数据库路径: {config.database_path}")
     print(f"最大并发数: {config.max_workers}")
     print(f"调试模式: {config.debug}")

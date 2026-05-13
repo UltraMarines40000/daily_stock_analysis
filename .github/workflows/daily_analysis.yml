@@ -325,7 +325,6 @@ jobs:
           # ==========================================
           POPULAR_STOCK_AUTO_ENABLED: ${{ vars.POPULAR_STOCK_AUTO_ENABLED || secrets.POPULAR_STOCK_AUTO_ENABLED || 'true' }}
           POPULAR_STOCK_LIMIT: ${{ vars.POPULAR_STOCK_LIMIT || secrets.POPULAR_STOCK_LIMIT || '100' }}
-          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '' }}
           TOTAL_INVESTMENT_AMOUNT: ${{ secrets.TOTAL_INVESTMENT_AMOUNT }}
           HOLDING_DETAILS: ${{ secrets.HOLDING_DETAILS }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}

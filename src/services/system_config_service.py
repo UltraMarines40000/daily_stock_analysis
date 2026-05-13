@@ -377,7 +377,7 @@ class SystemConfigService:
         checks = [
             llm_check,
             agent_check,
-            self._build_setup_stock_list_check(effective_map),
+            self._build_setup_popular_stock_pool_check(effective_map),
             self._build_setup_notification_check(effective_map),
             self._build_setup_storage_check(effective_map),
         ]
@@ -1997,7 +1997,8 @@ class SystemConfigService:
     @staticmethod
     def _is_setup_relevant_env_key(key: str) -> bool:
         if key in {
-            "STOCK_LIST",
+            "POPULAR_STOCK_AUTO_ENABLED",
+            "POPULAR_STOCK_LIMIT",
             "DATABASE_PATH",
             "LITELLM_CONFIG",
             "LITELLM_MODEL",
@@ -2302,25 +2303,26 @@ class SystemConfigService:
             "请调整 AGENT_LITELLM_MODEL 或补齐对应渠道配置。",
         )
 
-    def _build_setup_stock_list_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
-        stocks = self._split_csv(effective_map.get("STOCK_LIST") or "")
-        if stocks:
+    def _build_setup_popular_stock_pool_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:
+        enabled = (effective_map.get("POPULAR_STOCK_AUTO_ENABLED") or "true").strip().lower()
+        if enabled in {"0", "false", "no", "off"}:
             return self._setup_check(
-                "stock_list",
-                "自选股",
+                "popular_stock_pool",
+                "自动股票池",
                 "base",
                 True,
-                "configured",
-                f"已配置 {len(stocks)} 只股票。",
+                "needs_action",
+                "POPULAR_STOCK_AUTO_ENABLED 已关闭，但手动股票池回退已禁用。",
+                "请启用 POPULAR_STOCK_AUTO_ENABLED=true。",
             )
+        limit = (effective_map.get("POPULAR_STOCK_LIMIT") or "100").strip() or "100"
         return self._setup_check(
-            "stock_list",
-            "自选股",
+            "popular_stock_pool",
+            "自动股票池",
             "base",
             True,
-            "needs_action",
-            "当前 STOCK_LIST 为空。",
-            "请至少添加 1 只股票用于首次试跑。",
+            "configured",
+            f"将自动抓取东方财富人气榜前 {limit} 名股票。",
         )
 
     def _build_setup_notification_check(self, effective_map: Dict[str, str]) -> Dict[str, Any]:

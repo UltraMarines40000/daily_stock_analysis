@@ -1840,7 +1840,7 @@ class StockAnalysisPipeline:
             stock_codes = self.config.stock_list
         
         if not stock_codes:
-            logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
+            logger.error("自动股票池为空：东方财富人气榜抓取失败或返回空")
             return []
         
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")

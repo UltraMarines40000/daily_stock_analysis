@@ -425,7 +425,7 @@ def run_full_analysis(
     from src.core.pipeline import StockAnalysisPipeline
 
     try:
-        # Issue #529: Hot-reload STOCK_LIST from .env on each scheduled run
+        # Refresh the automatic popularity stock pool on each scheduled run.
         if stock_codes is None:
             config.refresh_stock_list()
 
@@ -671,7 +671,7 @@ def _resolve_scheduled_stock_codes(stock_codes: Optional[List[str]]) -> Optional
     """Scheduled runs should always read the latest persisted watchlist."""
     if stock_codes is not None:
         logger.warning(
-            "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新读取最新的 STOCK_LIST。"
+            "定时模式下检测到 --stocks 参数；计划执行将忽略启动时股票快照，并在每次运行前重新抓取东方财富人气榜股票池。"
         )
     return None
 
