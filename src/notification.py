@@ -306,6 +306,19 @@ class NotificationService(
         results: List[AnalysisResult],
         report_date: Optional[str] = None,
     ) -> Optional[str]:
+        for result in results or []:
+            dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+            trade_plan = dashboard.get("trade_plan")
+            if not isinstance(trade_plan, dict):
+                continue
+            raw_content = str(
+                trade_plan.get("raw_content")
+                or getattr(result, "raw_response", "")
+                or ""
+            ).strip()
+            if raw_content:
+                return raw_content
+
         collected = self._collect_trade_order_lines(results)
         if collected is None:
             return None

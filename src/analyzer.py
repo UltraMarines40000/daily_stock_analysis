@@ -1653,7 +1653,7 @@ Only output orders with concrete numeric price and share count. Never invent mis
                 system_prompt=system_prompt,
                 stream=True,
                 stream_progress_callback=stream_progress_callback,
-                response_validator=self._validate_trade_order_response,
+                response_validator=None,
             )
             elapsed = time.time() - start_time
             response_preview = response_text[:500] + "..." if len(response_text) > 500 else response_text
@@ -1670,27 +1670,31 @@ Only output orders with concrete numeric price and share count. Never invent mis
                 len(response_text),
                 response_text,
             )
-            result = self._parse_trade_order_response(
-                response_text,
-                "GLOBAL",
-                name,
-                report_language,
+            result = AnalysisResult(
+                code="GLOBAL",
+                name=name,
+                sentiment_score=50,
+                trend_prediction="Global trade plan generated" if report_language == "en" else "全局交易计划已生成",
+                operation_advice="See raw LLM content" if report_language == "en" else "查看模型原始输出",
+                decision_type="hold",
+                confidence_level="Medium" if report_language == "en" else "中",
+                report_language=report_language,
+                dashboard={
+                    "trade_plan": {
+                        "raw_content": response_text,
+                    },
+                    "core_conclusion": {
+                        "one_sentence": response_text,
+                    },
+                },
+                analysis_summary=response_text,
+                key_points="Raw LLM content" if report_language == "en" else "模型原始输出",
+                raw_response=response_text,
+                search_performed=any(bool(item.get("news_context")) for item in candidates),
+                model_used=model_used,
+                success=True,
             )
-            if result is None:
-                result = self._parse_response(response_text, "GLOBAL", name)
-            result.raw_response = response_text
-            result.search_performed = any(bool(item.get("news_context")) for item in candidates)
-            result.model_used = model_used
-            result.report_language = report_language
-            trade_plan = result.dashboard.get("trade_plan") if isinstance(result.dashboard, dict) else {}
-            buy_count = len(trade_plan.get("buy_list") or []) if isinstance(trade_plan, dict) else 0
-            sell_count = len(trade_plan.get("sell_list") or []) if isinstance(trade_plan, dict) else 0
-            logger.info(
-                "[LLM解析] 全局交易委托解析完成: buy_count=%d, sell_count=%d, decision_type=%s",
-                buy_count,
-                sell_count,
-                result.decision_type,
-            )
+            logger.info("[LLM输出] 全局交易决策将原样返回模型 content，不执行交易列表解析")
             persist_llm_usage(llm_usage, model_used, call_type="global_trade_plan", stock_code="GLOBAL")
             return result
         except Exception as e:
@@ -2430,6 +2434,7 @@ Use [] for empty buy/sell sections. Do not output JSON."""
                 "buy_list": buy_orders,
                 "sell_list": sell_orders,
                 "reason_text": reason_text,
+                "raw_content": text,
             },
             "core_conclusion": {
                 "one_sentence": reason_text or text,
