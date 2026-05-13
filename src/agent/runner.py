@@ -209,6 +209,137 @@ def parse_dashboard_json(content: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _extract_trade_orders(section_text: str) -> List[Dict[str, Any]]:
+    """Extract {code, price, shares} tuples from a buy/sell list section."""
+    orders: List[Dict[str, Any]] = []
+    if not section_text:
+        return orders
+
+    pattern = re.compile(
+        r"\{\s*([A-Za-z0-9._-]+)\s*[,，]\s*([0-9]+(?:\.[0-9]+)?)\s*[,，]\s*([0-9]+)\s*\}"
+    )
+    for match in pattern.finditer(section_text):
+        code, price, shares = match.groups()
+        try:
+            orders.append(
+                {
+                    "code": code.strip(),
+                    "price": float(price),
+                    "shares": int(shares),
+                }
+            )
+        except (TypeError, ValueError):
+            continue
+    return orders
+
+
+def _extract_named_trade_section(content: str, headings: List[str], stop_headings: List[str]) -> Optional[str]:
+    escaped = "|".join(re.escape(h) for h in headings)
+    stops = "|".join(re.escape(h) for h in stop_headings)
+    match = re.search(
+        rf"(?:^|\n)\s*(?:{escaped})\s*[:：]?\s*(.*?)(?=(?:\n\s*(?:{stops})\s*[:：]?)|\Z)",
+        content,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
+def format_trade_order_content(buy_list: List[Dict[str, Any]], sell_list: List[Dict[str, Any]]) -> str:
+    """Format parsed trade orders into the user-facing two-section output."""
+
+    def _fmt(order: Dict[str, Any]) -> str:
+        return f"- {{{order.get('code')}, {order.get('price')}, {order.get('shares')}}}"
+
+    buy_lines = [_fmt(order) for order in buy_list] or ["[]"]
+    sell_lines = [_fmt(order) for order in sell_list] or ["[]"]
+    return "买入列表:\n" + "\n".join(buy_lines) + "\n\n卖出列表:\n" + "\n".join(sell_lines)
+
+
+def build_trade_plan_dashboard(
+    buy_list: List[Dict[str, Any]],
+    sell_list: List[Dict[str, Any]],
+    *,
+    stock_code: str = "",
+    stock_name: str = "",
+) -> Dict[str, Any]:
+    """Wrap trade orders in the dashboard shape expected by the existing pipeline."""
+    if sell_list:
+        decision_type = "sell"
+        operation_advice = "卖出"
+        score = 30
+        trend = "看空"
+    elif buy_list:
+        decision_type = "buy"
+        operation_advice = "买入"
+        score = 70
+        trend = "看多"
+    else:
+        decision_type = "hold"
+        operation_advice = "观望"
+        score = 50
+        trend = "震荡"
+
+    summary = format_trade_order_content(buy_list, sell_list)
+    return {
+        "stock_name": stock_name or stock_code,
+        "sentiment_score": score,
+        "trend_prediction": trend,
+        "operation_advice": operation_advice,
+        "decision_type": decision_type,
+        "confidence_level": "中",
+        "dashboard": {
+            "trade_plan": {
+                "buy_list": buy_list,
+                "sell_list": sell_list,
+            },
+            "core_conclusion": {
+                "one_sentence": operation_advice,
+                "signal_type": decision_type,
+            },
+            "intelligence": {
+                "risk_alerts": [],
+            },
+            "battle_plan": {},
+        },
+        "analysis_summary": summary,
+        "key_points": "",
+        "risk_warning": "",
+    }
+
+
+def parse_trade_order_text(
+    content: str,
+    *,
+    stock_code: str = "",
+    stock_name: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Parse the required final output: buy/sell lists of {code, price, shares} tuples."""
+    if not content:
+        return None
+
+    buy_section = _extract_named_trade_section(
+        content,
+        ["买入列表", "Buy List", "Buy list"],
+        ["卖出列表", "Sell List", "Sell list"],
+    )
+    sell_section = _extract_named_trade_section(
+        content,
+        ["卖出列表", "Sell List", "Sell list"],
+        ["买入列表", "Buy List", "Buy list"],
+    )
+    if buy_section is None or sell_section is None:
+        return None
+
+    buy_list = _extract_trade_orders(buy_section)
+    sell_list = _extract_trade_orders(sell_section)
+    return build_trade_plan_dashboard(
+        buy_list,
+        sell_list,
+        stock_code=stock_code,
+        stock_name=stock_name,
+    )
+
+
 def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
     """Best-effort JSON dict extraction from LLM text.
 

@@ -57,6 +57,43 @@ Requirements:
         if self.skill_instructions:
             skills = f"\n## Active Trading Skills\n\n{self.skill_instructions}\n"
 
+        trade_prompt = f"""\
+You are a **professional investment trader**. You are no longer a generic analyst,
+and your final job is to convert the collected evidence into concrete order lists.
+
+You will receive:
+1. Structured opinions from Technical / Intel / Risk / Skill agents
+2. Total investment amount and current holdings when available
+3. Risk flags and key price levels
+
+{skills}
+## Decision Rules
+1. Buy orders must respect the total investment amount and current holdings.
+2. A-share buy quantities must be multiples of 100 shares; if the available budget
+   cannot buy 100 shares, the buy list must be empty.
+3. Sell orders may only be generated for stocks in the holding details, and shares
+   must not exceed the current holding quantity.
+4. Every limit price must be a concrete number. Do not use ranges, "market price",
+   "near", or explanatory text.
+5. Use the prior agent opinions, risk flags, and key levels as evidence, but do not
+   output the reasoning.
+
+## Final Output
+Output only these two sections. Do not output JSON, markdown code fences, analysis,
+or explanations.
+
+买入列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+卖出列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+If there is no buy or sell action, write [] for that section.
+"""
+        if report_language == "en":
+            return trade_prompt + "\nUse English headings `Buy List:` and `Sell List:` if the caller requested English.\n"
+        return trade_prompt + "\n使用中文固定标题 `买入列表:` 和 `卖出列表:`。\n"
+
         prompt = f"""\
 You are a **Decision Synthesis Agent** that produces the final investment \
 Decision Dashboard.
@@ -132,6 +169,17 @@ new decision_type values.
                 f"Stock: {ctx.stock_code} ({ctx.stock_name})" if ctx.stock_name else f"Stock: {ctx.stock_code}",
                 "",
             ]
+            total_amount = ctx.get_data("total_investment_amount") or ctx.meta.get("total_investment_amount") or 0
+            holdings = ctx.get_data("holding_details") or ctx.meta.get("holding_details") or []
+            parts.extend(
+                [
+                    "## Account Constraints",
+                    f"Total investment amount: {total_amount}",
+                    f"Holding details: {json.dumps(holdings, ensure_ascii=False, default=str)}",
+                    "Buy quantities must use 100-share lots for A-shares. Sell quantities must not exceed current holdings.",
+                    "",
+                ]
+            )
 
         # Feed prior opinions
         if ctx.opinions:
@@ -168,7 +216,10 @@ new decision_type values.
                 "Do not output JSON unless the user explicitly requests structured data."
             )
         else:
-            parts.append("Synthesise the above into the Decision Dashboard JSON.")
+            parts.append(
+                "Synthesise the above into the final trade order lists only: 买入列表 and 卖出列表. "
+                "Do not output JSON or analysis text."
+            )
         return "\n".join(parts)
 
     def post_process(self, ctx: AgentContext, raw_text: str) -> Optional[AgentOpinion]:
@@ -188,7 +239,27 @@ new decision_type values.
                 raw_data={"response_mode": "chat"},
             )
 
-        from src.agent.runner import parse_dashboard_json
+        from src.agent.runner import parse_dashboard_json, parse_trade_order_text
+
+        dashboard = parse_trade_order_text(
+            raw_text,
+            stock_code=ctx.stock_code,
+            stock_name=ctx.stock_name,
+        )
+        if dashboard:
+            ctx.set_data("final_dashboard", dashboard)
+            trade_plan = (dashboard.get("dashboard") or {}).get("trade_plan") or {}
+            buy_list = trade_plan.get("buy_list") or []
+            sell_list = trade_plan.get("sell_list") or []
+            signal = dashboard.get("decision_type", "hold")
+            confidence = 0.7 if (buy_list or sell_list) else 0.5
+            return AgentOpinion(
+                agent_name=self.agent_name,
+                signal=signal,
+                confidence=confidence,
+                reasoning=dashboard.get("analysis_summary", ""),
+                raw_data=dashboard,
+            )
 
         dashboard = parse_dashboard_json(raw_text)
         if dashboard:

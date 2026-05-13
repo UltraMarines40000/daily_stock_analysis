@@ -40,7 +40,7 @@ from src.agent.protocols import (
     StageStatus,
     normalize_decision_signal,
 )
-from src.agent.runner import parse_dashboard_json
+from src.agent.runner import format_trade_order_content, parse_dashboard_json, parse_trade_order_text
 from src.agent.tools.registry import ToolRegistry
 from src.config import AGENT_MAX_STEPS_DEFAULT
 from src.report_language import normalize_report_language
@@ -138,7 +138,7 @@ class AgentOrchestrator:
                     note="多 Agent 超时，以下结论基于已完成阶段自动降级生成。",
                 )
                 ctx.set_data("final_dashboard", dashboard)
-                content = json.dumps(dashboard, ensure_ascii=False, indent=2)
+                content = self._content_from_dashboard(dashboard)
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
@@ -179,7 +179,7 @@ class AgentOrchestrator:
                     note="多 Agent 预算不足，以下结论基于已完成阶段自动降级生成。",
                 )
                 ctx.set_data("final_dashboard", dashboard)
-                content = json.dumps(dashboard, ensure_ascii=False, indent=2)
+                content = self._content_from_dashboard(dashboard)
 
         return OrchestratorResult(
             success=bool(content) if (not parse_dashboard or dashboard is not None) else False,
@@ -561,7 +561,7 @@ class AgentOrchestrator:
                 total_tokens=stats.total_tokens,
                 provider=provider,
                 model=model_str,
-                error="Failed to parse dashboard JSON from agent response",
+                error="Failed to parse trade order list from agent response",
                 stats=stats,
             )
 
@@ -706,6 +706,10 @@ class AgentOrchestrator:
             ctx.meta["skills_requested"] = requested_skills or []
             ctx.meta["strategies_requested"] = requested_skills or []
             ctx.meta["report_language"] = normalize_report_language(context.get("report_language", "zh"))
+            ctx.meta["total_investment_amount"] = context.get("total_investment_amount", 0)
+            ctx.meta["holding_details"] = context.get("holding_details") or []
+            ctx.set_data("total_investment_amount", context.get("total_investment_amount", 0))
+            ctx.set_data("holding_details", context.get("holding_details") or [])
 
             # Pre-populate data fields that the caller already has
             for data_key in ("realtime_quote", "daily_history", "chip_distribution",
@@ -737,6 +741,17 @@ class AgentOrchestrator:
                 lines.append(f"- [{rf['severity']}] {rf['description']}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _content_from_dashboard(dashboard: Dict[str, Any]) -> str:
+        nested = dashboard.get("dashboard") if isinstance(dashboard, dict) else None
+        trade_plan = nested.get("trade_plan") if isinstance(nested, dict) else None
+        if isinstance(trade_plan, dict):
+            return format_trade_order_content(
+                trade_plan.get("buy_list") or [],
+                trade_plan.get("sell_list") or [],
+            )
+        return json.dumps(dashboard, ensure_ascii=False, indent=2)
+
     def _resolve_final_output(
         self,
         ctx: AgentContext,
@@ -759,7 +774,7 @@ class AgentOrchestrator:
         if parse_dashboard:
             dashboard = self._resolve_dashboard_payload(ctx, final_dashboard, final_raw)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, self._content_from_dashboard(dashboard)
             if ctx.opinions:
                 return None, self._fallback_summary(ctx)
             return None, ""
@@ -771,7 +786,7 @@ class AgentOrchestrator:
         if isinstance(final_dashboard, dict):
             dashboard = self._normalize_dashboard_payload(final_dashboard, ctx)
             if dashboard is not None:
-                return dashboard, json.dumps(dashboard, ensure_ascii=False, indent=2)
+                return dashboard, self._content_from_dashboard(dashboard)
         if ctx.opinions:
             return None, self._fallback_summary(ctx)
         return None, ""
@@ -788,7 +803,13 @@ class AgentOrchestrator:
         if isinstance(final_dashboard, dict):
             dashboard = self._normalize_dashboard_payload(final_dashboard, ctx)
         elif isinstance(final_raw, str) and final_raw.strip():
-            parsed = parse_dashboard_json(final_raw)
+            parsed = parse_trade_order_text(
+                final_raw,
+                stock_code=ctx.stock_code,
+                stock_name=ctx.stock_name,
+            )
+            if not isinstance(parsed, dict):
+                parsed = parse_dashboard_json(final_raw)
             if isinstance(parsed, dict):
                 dashboard = self._normalize_dashboard_payload(parsed, ctx)
 
@@ -1244,6 +1265,9 @@ class AgentOrchestrator:
 
         dashboard = ctx.get_data("final_dashboard")
         if not isinstance(dashboard, dict):
+            return
+        nested = dashboard.get("dashboard")
+        if isinstance(nested, dict) and isinstance(nested.get("trade_plan"), dict):
             return
 
         risk_opinion = next((op for op in reversed(ctx.opinions) if op.agent_name == "risk"), None)

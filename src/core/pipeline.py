@@ -789,6 +789,8 @@ class StockAnalysisPipeline:
                 "report_type": report_type.value,
                 "report_language": report_language,
                 "fundamental_context": fundamental_context,
+                "total_investment_amount": getattr(self.config, "total_investment_amount", 0),
+                "holding_details": getattr(self.config, "holding_details", []),
             }
             
             if realtime_quote:
@@ -819,9 +821,9 @@ class StockAnalysisPipeline:
 
             # 运行 Agent
             if report_language == "en":
-                message = f"Analyze stock {code} ({stock_name}) and return the full decision dashboard JSON in English."
+                message = f"Analyze stock {code} ({stock_name}) and return only Buy List and Sell List trade orders."
             else:
-                message = f"请分析股票 {code} ({stock_name})，并生成决策仪表盘报告。"
+                message = f"请分析股票 {code} ({stock_name})，并只输出买入列表和卖出列表交易委托。"
             agent_result = executor.run(message, context=initial_context)
 
             # 转换为 AnalysisResult
@@ -1668,6 +1670,142 @@ class StockAnalysisPipeline:
             return None
         finally:
             reset_frozen_target_date(token)
+
+    def prepare_global_trade_candidate(
+        self,
+        code: str,
+        analysis_query_id: Optional[str] = None,
+        current_time: Optional[datetime] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Prepare one stock's data package for the portfolio-level LLM decision."""
+        logger.info("========== 开始准备全局候选 %s ==========", code)
+        from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
+
+        frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
+        token = set_frozen_target_date(frozen_td)
+        query_id = analysis_query_id or self.query_id or uuid.uuid4().hex
+        stock_name = code
+        try:
+            success, error = self.fetch_and_save_stock_data(code, current_time=current_time)
+            if not success:
+                logger.warning("[%s] 数据获取失败，将尝试使用已有数据: %s", code, error)
+
+            stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False) or code
+
+            realtime_quote = None
+            try:
+                if self.config.enable_realtime_quote:
+                    realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
+                    if realtime_quote and getattr(realtime_quote, "name", None):
+                        stock_name = realtime_quote.name
+            except Exception as exc:
+                logger.warning("%s(%s) 实时行情获取失败: %s", stock_name, code, exc)
+
+            chip_data = None
+            try:
+                chip_data = self.fetcher_manager.get_chip_distribution(code)
+            except Exception as exc:
+                logger.debug("%s(%s) 筹码分布获取失败: %s", stock_name, code, exc)
+
+            try:
+                fundamental_context = self.fetcher_manager.get_fundamental_context(
+                    code,
+                    budget_seconds=getattr(self.config, "fundamental_stage_timeout_seconds", 1.5),
+                )
+            except Exception as exc:
+                fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(exc))
+            fundamental_context = self._attach_belong_boards_to_fundamental_context(code, fundamental_context)
+            try:
+                self.db.save_fundamental_snapshot(
+                    query_id=query_id,
+                    code=code,
+                    payload=fundamental_context,
+                    source_chain=fundamental_context.get("source_chain", []),
+                    coverage=fundamental_context.get("coverage", {}),
+                )
+            except Exception as exc:
+                logger.debug("%s(%s) 基本面快照写入失败: %s", stock_name, code, exc)
+
+            trend_result: Optional[TrendAnalysisResult] = None
+            try:
+                from src.services.history_loader import get_frozen_target_date
+
+                market = get_market_for_stock(normalize_stock_code(code))
+                end_date = get_frozen_target_date() or get_market_now(market).date()
+                start_date = end_date - timedelta(days=89)
+                historical_bars = self.db.get_data_range(code, start_date, end_date)
+                if historical_bars:
+                    df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
+                    if self.config.enable_realtime_quote and realtime_quote:
+                        df = self._augment_historical_with_realtime(df, realtime_quote, code)
+                    trend_result = self.trend_analyzer.analyze(df, code)
+            except Exception as exc:
+                logger.warning("%s(%s) 趋势分析失败: %s", stock_name, code, exc, exc_info=True)
+
+            news_context = None
+            if self.search_service is not None and self.search_service.is_available:
+                try:
+                    intel_results = self.search_service.search_comprehensive_intel(
+                        stock_code=code,
+                        stock_name=stock_name,
+                        max_searches=5,
+                    )
+                    if intel_results:
+                        news_context = self.search_service.format_intel_report(intel_results, stock_name)
+                        query_context = self._build_query_context(query_id=query_id)
+                        for dim_name, response in intel_results.items():
+                            if response and response.success and response.results:
+                                self.db.save_news_intel(
+                                    code=code,
+                                    name=stock_name,
+                                    dimension=dim_name,
+                                    query=response.query,
+                                    response=response,
+                                    query_context=query_context,
+                                )
+                except Exception as exc:
+                    logger.warning("%s(%s) 情报搜索失败: %s", stock_name, code, exc)
+
+            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+                try:
+                    social_context = self.social_sentiment_service.get_social_context(code)
+                    if social_context:
+                        news_context = (news_context + "\n\n" + social_context) if news_context else social_context
+                except Exception as exc:
+                    logger.warning("%s(%s) Social sentiment fetch failed: %s", stock_name, code, exc)
+
+            context = self.db.get_analysis_context(code)
+            if context is None:
+                context = {
+                    "code": code,
+                    "stock_name": stock_name,
+                    "date": get_market_now(get_market_for_stock(normalize_stock_code(code))).date().isoformat(),
+                    "data_missing": True,
+                    "today": {},
+                    "yesterday": {},
+                }
+            enhanced_context = self._enhance_context(
+                context,
+                realtime_quote,
+                chip_data,
+                trend_result,
+                stock_name,
+                fundamental_context,
+            )
+            return {
+                "code": code,
+                "name": stock_name,
+                "context": enhanced_context,
+                "news_context": news_context,
+                "realtime_quote": self._safe_to_dict(realtime_quote) if realtime_quote else None,
+                "chip_distribution": self._safe_to_dict(chip_data) if chip_data else None,
+                "trend_result": self._safe_to_dict(trend_result) if trend_result else None,
+            }
+        except Exception as exc:
+            logger.exception("[%s] 全局候选准备失败: %s", code, exc)
+            return None
+        finally:
+            reset_frozen_target_date(token)
     
     def run(
         self,
@@ -1739,9 +1877,88 @@ class StockAnalysisPipeline:
 
         if single_stock_notify:
             logger.info(
-                "已启用单股推送模式：分析仍并发执行，通知改为在结果收集侧串行发送（报告类型: %s）",
+                "已启用单股推送模式，但全局交易决策只生成一份组合级委托清单（报告类型: %s）",
                 report_type_str,
             )
+
+        if not dry_run:
+            candidates: List[Dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                future_to_code = {
+                    executor.submit(
+                        self.prepare_global_trade_candidate,
+                        code,
+                        analysis_query_id=uuid.uuid4().hex,
+                        current_time=resume_reference_time,
+                    ): code
+                    for code in stock_codes
+                }
+                for idx, future in enumerate(as_completed(future_to_code)):
+                    code = future_to_code[future]
+                    try:
+                        candidate = future.result()
+                        if candidate:
+                            candidates.append(candidate)
+                    except Exception as e:
+                        logger.error("[%s] 全局候选任务执行失败: %s", code, e)
+                    if idx < len(stock_codes) - 1 and analysis_delay > 0:
+                        logger.debug("等待 %s 秒后继续下一只股票候选准备...", analysis_delay)
+                        time.sleep(analysis_delay)
+
+            elapsed_time = time.time() - start_time
+            logger.info("===== 候选数据准备完成 =====")
+            logger.info("成功候选: %d, 失败: %d, 耗时: %.2f 秒", len(candidates), len(stock_codes) - len(candidates), elapsed_time)
+
+            results: List[AnalysisResult] = []
+            if candidates:
+                llm_progress_state = {"last_progress": 72}
+
+                def _on_global_stream(chars_received: int) -> None:
+                    dynamic_progress = min(97, 72 + min(chars_received // 100, 25))
+                    if dynamic_progress <= llm_progress_state["last_progress"]:
+                        return
+                    llm_progress_state["last_progress"] = dynamic_progress
+                    self._emit_progress(
+                        dynamic_progress,
+                        f"全局交易决策：LLM 正在统一比较 {len(candidates)} 只股票（已接收 {chars_received} 字符）",
+                    )
+
+                self._emit_progress(70, f"正在把 {len(candidates)} 只股票提交给 LLM 做全局交易决策")
+                global_result = self.analyzer.analyze_global_trade_plan(
+                    candidates,
+                    progress_callback=self._emit_progress,
+                    stream_progress_callback=_on_global_stream,
+                )
+                if global_result and global_result.success:
+                    global_result.query_id = self.query_id or uuid.uuid4().hex
+                    results.append(global_result)
+                    try:
+                        self.db.save_analysis_history(
+                            result=global_result,
+                            query_id=global_result.query_id,
+                            report_type=report_type.value,
+                            news_content=None,
+                            context_snapshot={
+                                "mode": "global_trade_plan",
+                                "candidate_count": len(candidates),
+                                "stock_codes": stock_codes,
+                            },
+                            save_snapshot=self.save_context_snapshot,
+                        )
+                    except Exception as exc:
+                        logger.warning("保存全局交易计划历史失败: %s", exc)
+                elif global_result:
+                    logger.warning("全局交易决策失败: %s", global_result.error_message or "未知错误")
+
+            if results:
+                self._save_local_report(results, report_type)
+                if send_notification:
+                    if merge_notification:
+                        logger.info("合并推送模式：跳过本次推送，将在个股+大盘复盘后统一发送")
+                        self._send_notifications(results, report_type, skip_push=True)
+                    else:
+                        self._send_notifications(results, report_type)
+            return results
         
         results: List[AnalysisResult] = []
         

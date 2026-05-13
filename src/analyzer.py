@@ -13,6 +13,7 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple, Callable
@@ -117,6 +118,9 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
     """
     missing: List[str] = []
+    dash = result.dashboard if isinstance(result.dashboard, dict) else {}
+    if isinstance(dash.get("trade_plan"), dict):
+        return True, missing
 
     def _is_blank_text(value: Any) -> bool:
         if value is None:
@@ -145,7 +149,6 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     summary = result.analysis_summary
     if not summary or not isinstance(summary, str) or _is_blank_text(summary):
         missing.append("analysis_summary")
-    dash = result.dashboard if isinstance(result.dashboard, dict) else {}
     core = dash.get("core_conclusion")
     core = core if isinstance(core, dict) else {}
     if _is_blank_text(core.get("one_sentence")):
@@ -838,307 +841,50 @@ class GeminiAnalyzer:
     """
 
     # ========================================
-    # 系统提示词 - 决策仪表盘 v2.0
+    # 系统提示词 - 交易委托版
     # ========================================
-    # 输出格式升级：从简单信号升级为决策仪表盘
-    # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
+    # 这两个类常量仅保留为兼容旧代码/测试的兜底值；实际分析路径使用
+    # _get_analysis_system_prompt() 动态生成同等语义的系统提示词。
     # ========================================
 
-    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    LEGACY_DEFAULT_SYSTEM_PROMPT = """你是一位专业的{market_placeholder}投资交易员，不是泛泛的投资分析师。
 
 {guidelines_placeholder}
 
 """ + CORE_TRADING_SKILL_POLICY_ZH + """
 
-## 输出格式：决策仪表盘 JSON
+你的任务是基于真实行情、技术指标、筹码、新闻情报、账户总资金和持仓，生成可执行的限价委托清单。
 
-请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
+最终只允许输出：
 
-```json
-{
-    "stock_name": "股票中文名称",
-    "sentiment_score": 0-100整数,
-    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
-    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
-    "decision_type": "buy/hold/sell",
-    "confidence_level": "高/中/低",
+买入列表:
+- {股票代码, 委托价格, 下单股数}
 
-    "dashboard": {
-        "core_conclusion": {
-            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
-            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
-            "time_sensitivity": "立即行动/今日内/本周内/不急",
-            "position_advice": {
-                "no_position": "空仓者建议：具体操作指引",
-                "has_position": "持仓者建议：具体操作指引"
-            }
-        },
+卖出列表:
+- {股票代码, 委托价格, 下单股数}
 
-        "data_perspective": {
-            "trend_status": {
-                "ma_alignment": "均线排列状态描述",
-                "is_bullish": true/false,
-                "trend_score": 0-100
-            },
-            "price_position": {
-                "current_price": 当前价格数值,
-                "ma5": MA5数值,
-                "ma10": MA10数值,
-                "ma20": MA20数值,
-                "bias_ma5": 乖离率百分比数值,
-                "bias_status": "安全/警戒/危险",
-                "support_level": 支撑位价格,
-                "resistance_level": 压力位价格
-            },
-            "volume_analysis": {
-                "volume_ratio": 量比数值,
-                "volume_status": "放量/缩量/平量",
-                "turnover_rate": 换手率百分比,
-                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
-            },
-            "chip_structure": {
-                "profit_ratio": 获利比例,
-                "avg_cost": 平均成本,
-                "concentration": 筹码集中度,
-                "chip_health": "健康/一般/警惕"
-            }
-        },
+没有买入或卖出时，对应列表输出 []。
+不要输出 JSON、代码块、分析过程、评分、解释或报告正文。"""
 
-        "intelligence": {
-            "latest_news": "【最新消息】近期重要新闻摘要",
-            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
-            "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
-            "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
-            "sentiment_summary": "舆情情绪一句话总结"
-        },
-
-        "battle_plan": {
-            "sniper_points": {
-                "ideal_buy": "理想买入点：XX元（在MA5附近）",
-                "secondary_buy": "次优买入点：XX元（在MA10附近）",
-                "stop_loss": "止损位：XX元（跌破MA20或X%）",
-                "take_profit": "目标位：XX元（前高/整数关口）"
-            },
-            "position_strategy": {
-                "suggested_position": "建议仓位：X成",
-                "entry_plan": "分批建仓策略描述",
-                "risk_control": "风控策略描述"
-            },
-            "action_checklist": [
-                "✅/⚠️/❌ 检查项1：多头排列",
-                "✅/⚠️/❌ 检查项2：乖离率合理（强势趋势可放宽）",
-                "✅/⚠️/❌ 检查项3：量能配合",
-                "✅/⚠️/❌ 检查项4：无重大利空",
-                "✅/⚠️/❌ 检查项5：筹码健康",
-                "✅/⚠️/❌ 检查项6：PE估值合理"
-            ]
-        }
-    },
-
-    "analysis_summary": "100字综合分析摘要",
-    "key_points": "3-5个核心看点，逗号分隔",
-    "risk_warning": "风险提示",
-    "buy_reason": "操作理由，引用交易理念",
-
-    "trend_analysis": "走势形态分析",
-    "short_term_outlook": "短期1-3日展望",
-    "medium_term_outlook": "中期1-2周展望",
-    "technical_analysis": "技术面综合分析",
-    "ma_analysis": "均线系统分析",
-    "volume_analysis": "量能分析",
-    "pattern_analysis": "K线形态分析",
-    "fundamental_analysis": "基本面分析",
-    "sector_position": "板块行业分析",
-    "company_highlights": "公司亮点/风险",
-    "news_summary": "新闻摘要",
-    "market_sentiment": "市场情绪",
-    "hot_topics": "相关热点",
-
-    "search_performed": true/false,
-    "data_sources": "数据来源说明"
-}
-```
-
-## 评分标准
-
-### 强烈买入（80-100分）：
-- ✅ 多头排列：MA5 > MA10 > MA20
-- ✅ 低乖离率：<2%，最佳买点
-- ✅ 缩量回调或放量突破
-- ✅ 筹码集中健康
-- ✅ 消息面有利好催化
-
-### 买入（60-79分）：
-- ✅ 多头排列或弱势多头
-- ✅ 乖离率 <5%
-- ✅ 量能正常
-- ⚪ 允许一项次要条件不满足
-
-### 观望（40-59分）：
-- ⚠️ 乖离率 >5%（追高风险）
-- ⚠️ 均线缠绕趋势不明
-- ⚠️ 有风险事件
-
-### 卖出/减仓（0-39分）：
-- ❌ 空头排列
-- ❌ 跌破MA20
-- ❌ 放量下跌
-- ❌ 重大利空
-
-## 决策仪表盘核心原则
-
-1. **核心结论先行**：一句话说清该买该卖
-2. **分持仓建议**：空仓者和持仓者给不同建议
-3. **精确狙击点**：必须给出具体价格，不说模糊的话
-4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
-5. **风险优先级**：舆情中的风险点要醒目标出"""
-
-    SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    SYSTEM_PROMPT = """你是一位专业的{market_placeholder}投资交易员，不是泛泛的投资分析师。
 
 {guidelines_placeholder}
 
 {default_skill_policy_section}
 {skills_section}
 
-## 输出格式：决策仪表盘 JSON
+你的任务是基于真实行情、技术指标、筹码、新闻情报、账户总资金和持仓，生成可执行的限价委托清单。
 
-请严格按照以下 JSON 格式输出，这是一个完整的【决策仪表盘】：
+最终只允许输出：
 
-```json
-{
-    "stock_name": "股票中文名称",
-    "sentiment_score": 0-100整数,
-    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
-    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
-    "decision_type": "buy/hold/sell",
-    "confidence_level": "高/中/低",
+买入列表:
+- {股票代码, 委托价格, 下单股数}
 
-    "dashboard": {
-        "core_conclusion": {
-            "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
-            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
-            "time_sensitivity": "立即行动/今日内/本周内/不急",
-            "position_advice": {
-                "no_position": "空仓者建议：具体操作指引",
-                "has_position": "持仓者建议：具体操作指引"
-            }
-        },
+卖出列表:
+- {股票代码, 委托价格, 下单股数}
 
-        "data_perspective": {
-            "trend_status": {
-                "ma_alignment": "均线排列状态描述",
-                "is_bullish": true/false,
-                "trend_score": 0-100
-            },
-            "price_position": {
-                "current_price": 当前价格数值,
-                "ma5": MA5数值,
-                "ma10": MA10数值,
-                "ma20": MA20数值,
-                "bias_ma5": 乖离率百分比数值,
-                "bias_status": "安全/警戒/危险",
-                "support_level": 支撑位价格,
-                "resistance_level": 压力位价格
-            },
-            "volume_analysis": {
-                "volume_ratio": 量比数值,
-                "volume_status": "放量/缩量/平量",
-                "turnover_rate": 换手率百分比,
-                "volume_meaning": "量能含义解读（如：缩量回调表示抛压减轻）"
-            },
-            "chip_structure": {
-                "profit_ratio": 获利比例,
-                "avg_cost": 平均成本,
-                "concentration": 筹码集中度,
-                "chip_health": "健康/一般/警惕"
-            }
-        },
-
-        "intelligence": {
-            "latest_news": "【最新消息】近期重要新闻摘要",
-            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
-            "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
-            "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
-            "sentiment_summary": "舆情情绪一句话总结"
-        },
-
-        "battle_plan": {
-            "sniper_points": {
-                "ideal_buy": "理想入场位：XX元（满足主要技能触发条件）",
-                "secondary_buy": "次优入场位：XX元（更保守或确认后执行）",
-                "stop_loss": "止损位：XX元（失效条件或X%风险）",
-                "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
-            },
-            "position_strategy": {
-                "suggested_position": "建议仓位：X成",
-                "entry_plan": "分批建仓策略描述",
-                "risk_control": "风控策略描述"
-            },
-            "action_checklist": [
-                "✅/⚠️/❌ 检查项1：当前结构是否满足激活技能条件",
-                "✅/⚠️/❌ 检查项2：入场位置与风险回报是否合理",
-                "✅/⚠️/❌ 检查项3：量价/波动/筹码是否支持判断",
-                "✅/⚠️/❌ 检查项4：无重大利空",
-                "✅/⚠️/❌ 检查项5：仓位与止损计划明确",
-                "✅/⚠️/❌ 检查项6：估值/业绩/催化与结论匹配"
-            ]
-        }
-    },
-
-    "analysis_summary": "100字综合分析摘要",
-    "key_points": "3-5个核心看点，逗号分隔",
-    "risk_warning": "风险提示",
-    "buy_reason": "操作理由，引用激活技能或风险框架",
-
-    "trend_analysis": "走势形态分析",
-    "short_term_outlook": "短期1-3日展望",
-    "medium_term_outlook": "中期1-2周展望",
-    "technical_analysis": "技术面综合分析",
-    "ma_analysis": "均线系统分析",
-    "volume_analysis": "量能分析",
-    "pattern_analysis": "K线形态分析",
-    "fundamental_analysis": "基本面分析",
-    "sector_position": "板块行业分析",
-    "company_highlights": "公司亮点/风险",
-    "news_summary": "新闻摘要",
-    "market_sentiment": "市场情绪",
-    "hot_topics": "相关热点",
-
-    "search_performed": true/false,
-    "data_sources": "数据来源说明"
-}
-```
-
-## 评分标准
-
-### 强烈买入（80-100分）：
-- ✅ 多个激活技能同时支持积极结论
-- ✅ 上行空间、触发条件与风险回报清晰
-- ✅ 关键风险已排查，仓位与止损计划明确
-- ✅ 重要数据和情报结论彼此一致
-
-### 买入（60-79分）：
-- ✅ 主信号偏积极，但仍有少量待确认项
-- ✅ 允许存在可控风险或次优入场点
-- ✅ 需要在报告中明确补充观察条件
-
-### 观望（40-59分）：
-- ⚠️ 信号分歧较大，或缺乏足够确认
-- ⚠️ 风险与机会大致均衡
-- ⚠️ 更适合等待触发条件或回避不确定性
-
-### 卖出/减仓（0-39分）：
-- ❌ 主要结论转弱，风险明显高于收益
-- ❌ 触发了止损/失效条件或重大利空
-- ❌ 现有仓位更需要保护而不是进攻
-
-## 决策仪表盘核心原则
-
-1. **核心结论先行**：一句话说清该买该卖
-2. **分持仓建议**：空仓者和持仓者给不同建议
-3. **精确狙击点**：必须给出具体价格，不说模糊的话
-4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
-5. **风险优先级**：舆情中的风险点要醒目标出"""
+没有买入或卖出时，对应列表输出 []。
+不要输出 JSON、代码块、分析过程、评分、解释或报告正文。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 
@@ -1221,45 +967,47 @@ class GeminiAnalyzer:
         lang = normalize_report_language(report_language)
         market_role = get_market_role(stock_code, lang)
         market_guidelines = get_market_guidelines(stock_code, lang)
-        skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
-        if use_legacy_default_prompt:
-            base_prompt = self.LEGACY_DEFAULT_SYSTEM_PROMPT.replace(
-                "{market_placeholder}", market_role
-            ).replace(
-                "{guidelines_placeholder}", market_guidelines
-            )
-        else:
-            skills_section = ""
-            if skill_instructions:
-                skills_section = f"## 激活的交易技能\n\n{skill_instructions}\n"
-            default_skill_policy_section = ""
-            if default_skill_policy:
-                default_skill_policy_section = f"{default_skill_policy}\n"
-            base_prompt = (
-                self.SYSTEM_PROMPT.replace("{market_placeholder}", market_role)
-                .replace("{guidelines_placeholder}", market_guidelines)
-                .replace("{default_skill_policy_section}", default_skill_policy_section)
-                .replace("{skills_section}", skills_section)
-            )
+        skill_instructions, default_skill_policy, _ = self._get_skill_prompt_sections()
+        skills_section = f"\n## 可用交易技能\n{skill_instructions}\n" if skill_instructions else ""
+        default_policy_section = f"\n## 基础交易纪律\n{default_skill_policy}\n" if default_skill_policy else ""
         if lang == "en":
-            return base_prompt + """
+            return f"""You are a professional {market_role} investment trader, not a generic analyst.
 
-## Output Language (highest priority)
+{market_guidelines}
+{default_policy_section}
+{skills_section}
+Your job is to convert market data, technical signals, holdings, capital constraints, and fresh searched information into executable limit-order suggestions.
 
-- Keep all JSON keys unchanged.
-- `decision_type` must remain `buy|hold|sell`.
-- All human-readable JSON values must be written in English.
-- Use the common English company name when you are confident; otherwise keep the original listed company name instead of inventing one.
-- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, nested dashboard text, checklist items, and all narrative summaries.
-"""
-        return base_prompt + """
+Output plain text only. Do not output JSON, Markdown code fences, explanations, ratings, dashboards, or risk commentary.
+Use exactly these two sections:
 
-## 输出语言（最高优先级）
+Buy List:
+- {{stock code, limit price, order shares}}
 
-- 所有 JSON 键名保持不变。
-- `decision_type` 必须保持为 `buy|hold|sell`。
-- 所有面向用户的人类可读文本值必须使用中文。
-"""
+Sell List:
+- {{stock code, limit price, order shares}}
+
+If there is no buy or sell order, output an empty list under that section as [].
+Only output orders with concrete numeric price and share count. Never invent missing prices."""
+
+        return f"""你是一位专业的{market_role}投资交易员，不再是泛泛的投资分析师。
+
+{market_guidelines}
+{default_policy_section}
+{skills_section}
+你的任务是把行情、技术信号、持仓、总资金约束和最新搜索情报转化为可执行的限价委托建议。
+
+只输出纯文本。不要输出 JSON，不要输出 Markdown 代码块，不要输出分析过程、评分、仪表盘、理由或风险说明。
+必须严格使用下面两个区块：
+
+买入列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+卖出列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+如果没有买入或卖出，区块内容输出 []。
+只允许输出有明确数字价格和股数的委托；价格缺失时不得编造。"""
 
     def _has_channel_config(self, config: Config) -> bool:
         """Check if multi-channel config (channels / YAML / legacy model_list) is active."""
@@ -1744,12 +1492,12 @@ class GeminiAnalyzer:
                         system_prompt=system_prompt,
                         stream=True,
                         stream_progress_callback=stream_progress_callback,
-                        response_validator=self._validate_json_response,
+                        response_validator=self._validate_trade_order_response,
                     )
                 except _AllModelsFailedError as exc:
                     if exc.last_response_text is not None:
                         logger.warning(
-                            "[LLM JSON] %s(%s): all models returned invalid JSON, using text fallback",
+                            "[LLM trade-order] %s(%s): all models returned invalid trade-order format, using text fallback",
                             name,
                             code,
                         )
@@ -1771,7 +1519,7 @@ class GeminiAnalyzer:
                 )
                 # Keep parser/retry progress monotonic so task progress/message never "goes backward".
                 parse_progress = min(99, 93 + retry_count * 2)
-                _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
+                _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析交易委托列表")
 
                 # 解析响应
                 result = self._parse_response(response_text, code, name)
@@ -1835,6 +1583,192 @@ class GeminiAnalyzer:
                 model_used=None,
                 report_language=report_language,
             )
+
+    def analyze_global_trade_plan(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+        stream_progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> AnalysisResult:
+        """Make one portfolio-level trade decision from all candidate stocks."""
+        config = self._get_runtime_config()
+        report_language = normalize_report_language(getattr(config, "report_language", "zh"))
+        name = "Global Trade Plan" if report_language == "en" else "全局交易计划"
+
+        def _emit_progress(progress: int, message: str) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(progress, message)
+            except Exception as exc:
+                logger.debug("[analyzer] global progress callback skipped: %s", exc)
+
+        if not self.is_available():
+            return AnalysisResult(
+                code="GLOBAL",
+                name=name,
+                sentiment_score=50,
+                trend_prediction="Unavailable" if report_language == "en" else "不可用",
+                operation_advice="Watch" if report_language == "en" else "观望",
+                confidence_level="Low" if report_language == "en" else "低",
+                analysis_summary="LLM API key is not configured" if report_language == "en" else "LLM API Key 未配置",
+                success=False,
+                error_message="LLM API key is not configured" if report_language == "en" else "LLM API Key 未配置",
+                report_language=report_language,
+            )
+
+        try:
+            prompt = self._format_global_trade_prompt(candidates, report_language=report_language)
+            system_prompt = self._get_analysis_system_prompt(report_language, stock_code="GLOBAL")
+            generation_config = {
+                "temperature": config.llm_temperature,
+                "max_output_tokens": 8192,
+            }
+            logger.info("[LLM配置] 全局交易决策候选数: %d, Prompt 长度: %d 字符", len(candidates), len(prompt))
+            logger.debug("=== 全局交易 Prompt ===\n%s\n=== End Prompt ===", prompt)
+            _emit_progress(72, f"{name}：正在请求 LLM 做全局资金分配")
+
+            response_text, model_used, llm_usage = self._call_litellm(
+                prompt,
+                generation_config,
+                system_prompt=system_prompt,
+                stream=True,
+                stream_progress_callback=stream_progress_callback,
+                response_validator=self._validate_trade_order_response,
+            )
+            result = self._parse_trade_order_response(
+                response_text,
+                "GLOBAL",
+                name,
+                report_language,
+            )
+            if result is None:
+                result = self._parse_response(response_text, "GLOBAL", name)
+            result.raw_response = response_text
+            result.search_performed = any(bool(item.get("news_context")) for item in candidates)
+            result.model_used = model_used
+            result.report_language = report_language
+            persist_llm_usage(llm_usage, model_used, call_type="global_trade_plan", stock_code="GLOBAL")
+            return result
+        except Exception as e:
+            logger.error("全局交易决策失败: %s", e, exc_info=True)
+            return AnalysisResult(
+                code="GLOBAL",
+                name=name,
+                sentiment_score=50,
+                trend_prediction="Failed" if report_language == "en" else "失败",
+                operation_advice="Watch" if report_language == "en" else "观望",
+                confidence_level="Low" if report_language == "en" else "低",
+                analysis_summary=str(e)[:200],
+                success=False,
+                error_message=str(e),
+                report_language=report_language,
+            )
+
+    def _format_global_trade_prompt(
+        self,
+        candidates: List[Dict[str, Any]],
+        *,
+        report_language: str,
+    ) -> str:
+        config = self._get_runtime_config()
+        total_investment = int(getattr(config, "total_investment_amount", 0) or 0)
+        holdings = getattr(config, "holding_details", []) or []
+
+        compact_candidates: List[Dict[str, Any]] = []
+        for item in candidates:
+            context = item.get("context") if isinstance(item.get("context"), dict) else {}
+            today = context.get("today") if isinstance(context.get("today"), dict) else {}
+            realtime = context.get("realtime") if isinstance(context.get("realtime"), dict) else {}
+            trend = context.get("trend_analysis") if isinstance(context.get("trend_analysis"), dict) else {}
+            chip = context.get("chip") if isinstance(context.get("chip"), dict) else {}
+            news_text = str(item.get("news_context") or "")
+            if len(news_text) > 1200:
+                news_text = news_text[:1200] + "\n...[truncated]"
+            compact_candidates.append(
+                {
+                    "code": item.get("code") or context.get("code"),
+                    "name": item.get("name") or context.get("stock_name"),
+                    "price": realtime.get("price") or today.get("close"),
+                    "change_pct": realtime.get("change_pct") or today.get("pct_chg"),
+                    "volume_ratio": realtime.get("volume_ratio"),
+                    "turnover_rate": realtime.get("turnover_rate"),
+                    "ma5": today.get("ma5"),
+                    "ma10": today.get("ma10"),
+                    "ma20": today.get("ma20"),
+                    "ma_status": context.get("ma_status"),
+                    "trend_status": trend.get("trend_status"),
+                    "trend_strength": trend.get("trend_strength"),
+                    "bias_ma5": trend.get("bias_ma5"),
+                    "buy_signal": trend.get("buy_signal"),
+                    "signal_score": trend.get("signal_score"),
+                    "signal_reasons": trend.get("signal_reasons"),
+                    "risk_factors": trend.get("risk_factors"),
+                    "chip": {
+                        "profit_ratio": chip.get("profit_ratio"),
+                        "avg_cost": chip.get("avg_cost"),
+                        "concentration_90": chip.get("concentration_90"),
+                        "status": chip.get("chip_status"),
+                    },
+                    "news_context": news_text,
+                }
+            )
+
+        if report_language == "en":
+            return f"""# Portfolio-Level Trade Decision
+
+You must make one global decision across all candidates. Do not decide stock by stock independently.
+
+## Account
+- Total investment amount: {total_investment}
+- Holding details: {json.dumps(holdings, ensure_ascii=False)}
+
+## Candidate stocks
+{json.dumps(compact_candidates, ensure_ascii=False, default=str, indent=2)}
+
+## Rules
+- Rank all candidates globally before allocating capital.
+- Buy orders must fit the total account budget and current holdings.
+- A-share buy quantities must be multiples of 100 shares.
+- Sell orders may only use stocks in holding details and must not exceed held shares.
+- Output concrete limit prices and share counts only.
+
+## Final output only
+Buy List:
+- {{stock code, limit price, order shares}}
+
+Sell List:
+- {{stock code, limit price, order shares}}
+
+Use [] for empty sections. Do not output JSON or explanations."""
+
+        return f"""# 全局交易决策请求
+
+你必须在所有候选股票之间做一次全局最优决策，不允许逐只股票独立决策后简单拼接。
+
+## 账户
+- 总投资金额：{total_investment}
+- 持仓详情（三元组：股票代码，持有成本，持有股数）：{json.dumps(holdings, ensure_ascii=False)}
+
+## 候选股票全局信息
+{json.dumps(compact_candidates, ensure_ascii=False, default=str, indent=2)}
+
+## 决策规则
+- 先对所有候选股票做全局排序，再分配资金。
+- 买入总金额必须受总投资金额和现有持仓约束。
+- A 股买入股数必须是 100 股整数倍。
+- 卖出只能针对持仓详情中已有股票，卖出股数不得超过持有股数。
+- 委托价格和下单股数必须是明确数字。
+
+## 最终只输出
+买入列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+卖出列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+没有买入或卖出时输出 []。不要输出 JSON、解释、排序过程或分析理由。"""
     
     def _format_prompt(
         self, 
@@ -1865,6 +1799,28 @@ class GeminiAnalyzer:
         today = context.get('today', {})
         unknown_text = get_unknown_text(report_language)
         no_data_text = get_no_data_text(report_language)
+        prompt_config = self._get_runtime_config()
+        total_investment = int(getattr(prompt_config, "total_investment_amount", 0) or 0)
+        holding_details = getattr(prompt_config, "holding_details", []) or []
+        current_holding = next(
+            (
+                item for item in holding_details
+                if str(item.get("code", "")).strip().upper() == str(code).strip().upper()
+            ),
+            None,
+        )
+        if holding_details:
+            holdings_text = "\n".join(
+                f"- {{{item.get('code')}, {item.get('cost')}, {item.get('shares')}}}"
+                for item in holding_details
+            )
+        else:
+            holdings_text = "[]"
+        current_holding_text = (
+            f"{{{current_holding.get('code')}, {current_holding.get('cost')}, {current_holding.get('shares')}}}"
+            if current_holding
+            else "[]"
+        )
         
         # ========== 构建决策仪表盘格式的输入 ==========
         prompt = f"""# 决策仪表盘分析请求
@@ -1877,6 +1833,15 @@ class GeminiAnalyzer:
 | 分析日期 | {context.get('date', unknown_text)} |
 
 ---
+
+## 💼 账户与持仓约束
+- 总投资金额：{total_investment}
+- 持仓详情（三元组：股票代码，持有成本，持有股数）：
+{holdings_text}
+- 当前股票持仓：{current_holding_text}
+- 买入下单股数必须是 A 股一手 100 股的整数倍；若预算不足 100 股则买入列表为空。
+- 单只新买入标的的委托金额原则上不得超过总投资金额的 10%，除非当前没有任何持仓且技术/消息信号极强。
+- 卖出只能针对“当前股票持仓”中已有股数，卖出股数不得超过持有股数。
 
 ## 📈 技术面数据
 
@@ -2088,7 +2053,7 @@ class GeminiAnalyzer:
 2. 🎯 **利好催化**：业绩、合同、政策
 3. 📊 **业绩预期**：年报预告、业绩快报
 4. 🕒 **时间规则（强制）**：
-   - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
+   - 只把带具体日期（YYYY-MM-DD）的近因事件纳入交易判断
    - 超出近{news_window_days}日窗口的新闻一律忽略
    - 时间未知、无法确定发布日期的新闻一律忽略
 
@@ -2116,7 +2081,7 @@ class GeminiAnalyzer:
 
 ## ✅ 分析任务
 
-请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
+请为 **{stock_name}({code})** 生成交易委托列表。你必须像交易员一样给出可下单的限价委托，而不是解释性分析报告。
 """
         if context.get('is_index_etf'):
             prompt += """
@@ -2128,9 +2093,11 @@ class GeminiAnalyzer:
 
 """
         prompt += f"""
-### ⚠️ 重要：输出正确的股票名称格式
-正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
-如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
+### ⚠️ 重要：交易输出约束
+- 只能输出当前股票 **{code}** 的买入或卖出委托。
+- 买入委托必须同时满足资金约束、技术位置、消息面风险和一手 100 股整数倍约束。
+- 卖出委托必须基于当前股票持仓；若当前股票未持仓，卖出列表必须为空。
+- 委托价格必须是明确数字，优先使用当前价、支撑/压力位、MA5/MA10/MA20 或止损触发价推导；没有可靠价格时对应列表为空。
 """
         if use_legacy_default_prompt:
             prompt += f"""
@@ -2154,36 +2121,30 @@ class GeminiAnalyzer:
 """
         prompt += f"""
 
-### 决策仪表盘要求：
-- **股票名称**：必须输出正确的中文全称（如"贵州茅台"而非"股票600519"）
-- **核心结论**：一句话说清该买/该卖/该等
-- **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
-- **具体狙击点位**：买入价、止损价、目标价（精确到分）
-- **检查清单**：每项用 ✅/⚠️/❌ 标记
-- **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
-- **技术面一致性**：严禁把“空头排列”和“多头排列”等互斥结论同时当作有效依据；若基本面/事件面与技术面冲突，必须明确写“事件先行、技术待确认”或“基本面偏多，但技术面尚未确认”
- 
-请输出完整的 JSON 格式决策仪表盘。"""
+### 最终输出格式（最高优先级）：
+买入列表:
+- {{{code}, 委托价格, 下单股数}}
+
+卖出列表:
+- {{{code}, 委托价格, 下单股数}}
+
+没有买入或卖出时，该区块只输出 []。
+除以上两个区块外，不得输出任何其他文字。"""
 
         if report_language == "en":
             prompt += """
 
 ### Output language requirements (highest priority)
-- Keep every JSON key exactly as defined above; do not translate keys.
-- `decision_type` must remain `buy`, `hold`, or `sell`.
-- All human-readable JSON values must be in English.
-- This includes `stock_name`, `trend_prediction`, `operation_advice`, `confidence_level`, all nested dashboard text, checklist items, and every summary field.
-- Use the common English company name when you are confident. If not, keep the listed company name rather than inventing one.
-- When data is missing, explain it in English instead of Chinese.
+- Use the section titles `Buy List:` and `Sell List:`.
+- Do not output JSON.
 """
         else:
             prompt += f"""
 
 ### 输出语言要求（最高优先级）
-- 所有 JSON 键名必须保持不变，不要翻译键名。
-- `decision_type` 必须保持为 `buy`、`hold`、`sell`。
-- 所有面向用户的人类可读文本值必须使用中文。
-- 当数据缺失时，请使用中文直接说明“{no_data_text}，无法判断”。
+- 使用区块标题 `买入列表:` 和 `卖出列表:`。
+- 不要输出 JSON。
+- 当数据缺失导致无法形成明确价格或股数时，对应区块输出 []。
 """
         
         return prompt
@@ -2341,6 +2302,100 @@ class GeminiAnalyzer:
         """Delegate to module-level apply_placeholder_fill."""
         apply_placeholder_fill(result, missing_fields)
 
+    @staticmethod
+    def _extract_trade_orders(section_text: str) -> List[Dict[str, Any]]:
+        """Extract {code, price, shares} tuples from a trade-order section."""
+        if not section_text:
+            return []
+        if re.search(r"^\s*(\[\s*\]|无|空|none)\s*$", section_text.strip(), re.IGNORECASE):
+            return []
+        orders: List[Dict[str, Any]] = []
+        pattern = re.compile(
+            r"[\{（(]\s*([A-Za-z0-9.]+)\s*[,，]\s*([0-9]+(?:\.[0-9]+)?)\s*[,，]\s*([0-9]+)\s*[\}）)]"
+        )
+        for match in pattern.finditer(section_text):
+            code, price, shares = match.groups()
+            try:
+                orders.append(
+                    {
+                        "code": code.strip().upper(),
+                        "price": round(float(price), 3),
+                        "shares": int(shares),
+                    }
+                )
+            except (TypeError, ValueError):
+                continue
+        return orders
+
+    def _parse_trade_order_response(
+        self,
+        response_text: str,
+        code: str,
+        name: str,
+        report_language: str,
+    ) -> Optional[AnalysisResult]:
+        text = (response_text or "").replace("```", "").strip()
+        buy_match = re.search(
+            r"(?:买入列表|Buy List)\s*[:：]\s*(.*?)(?=(?:卖出列表|Sell List)\s*[:：]|$)",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        sell_match = re.search(
+            r"(?:卖出列表|Sell List)\s*[:：]\s*(.*)$",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if buy_match is None and sell_match is None:
+            return None
+
+        buy_orders = self._extract_trade_orders(buy_match.group(1) if buy_match else "")
+        sell_orders = self._extract_trade_orders(sell_match.group(1) if sell_match else "")
+        if buy_orders:
+            decision_type = "buy"
+            advice = "Buy" if report_language == "en" else "买入"
+            sentiment_score = 70
+        elif sell_orders:
+            decision_type = "sell"
+            advice = "Sell" if report_language == "en" else "卖出"
+            sentiment_score = 30
+        else:
+            decision_type = "hold"
+            advice = "Hold" if report_language == "en" else "观望"
+            sentiment_score = 50
+
+        dashboard = {
+            "trade_plan": {
+                "buy_list": buy_orders,
+                "sell_list": sell_orders,
+            },
+            "core_conclusion": {
+                "one_sentence": text,
+            },
+            "intelligence": {
+                "risk_alerts": [],
+            },
+        }
+        return AnalysisResult(
+            code=code,
+            name=name,
+            sentiment_score=sentiment_score,
+            trend_prediction="Trading order generated" if report_language == "en" else "交易委托生成",
+            operation_advice=advice,
+            decision_type=decision_type,
+            confidence_level="Medium" if report_language == "en" else "中",
+            report_language=report_language,
+            dashboard=dashboard,
+            analysis_summary=text,
+            key_points="Trade order list" if report_language == "en" else "交易委托列表",
+            success=True,
+        )
+
+    def _validate_trade_order_response(self, text: str) -> None:
+        if not re.search(r"(买入列表|Buy List)\s*[:：]", text or "", re.IGNORECASE):
+            raise ValueError("No buy-list section found in LLM response")
+        if not re.search(r"(卖出列表|Sell List)\s*[:：]", text or "", re.IGNORECASE):
+            raise ValueError("No sell-list section found in LLM response")
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -2357,6 +2412,15 @@ class GeminiAnalyzer:
             report_language = normalize_report_language(
                 getattr(self._get_runtime_config(), "report_language", "zh")
             )
+            trade_result = self._parse_trade_order_response(
+                response_text,
+                code,
+                name,
+                report_language,
+            )
+            if trade_result is not None:
+                return trade_result
+
             # 清理响应文本：移除 markdown 代码块标记
             cleaned_text = response_text
             if '```json' in cleaned_text:

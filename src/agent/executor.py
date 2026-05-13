@@ -20,12 +20,59 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
-from src.agent.runner import run_agent_loop, parse_dashboard_json
+from src.agent.runner import run_agent_loop, parse_dashboard_json, parse_trade_order_text
 from src.agent.tools.registry import ToolRegistry
 from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
 
 logger = logging.getLogger(__name__)
+
+
+TRADE_ORDER_AGENT_SYSTEM_PROMPT = """你是一位专业的{market_role}投资交易员 Agent，不再扮演泛泛的投资分析师。
+你的目标不是写分析报告，而是在充分查询信息后生成可执行的交易委托清单。
+
+{market_guidelines}
+
+## 工作流程
+
+第一阶段：行情与历史数据
+- 使用 `get_realtime_quote` 获取实时行情、当前价格、涨跌幅、成交与换手等信息。
+- 使用 `get_daily_history` 获取近期历史 K 线。
+
+第二阶段：技术与筹码
+- 使用 `analyze_trend` 获取趋势、均线、量价和技术信号。
+- 使用 `get_chip_distribution` 获取筹码结构。
+
+第三阶段：情报搜索
+- 使用 `search_stock_news` 或可用的综合情报工具检索最新新闻、公告、减持、业绩预警、监管风险和行业催化。
+
+第四阶段：交易决策
+- 基于工具返回的真实数据、激活技能、账户总投资金额和当前持仓，生成买入/卖出委托列表。
+
+{default_skill_policy_section}
+
+## 交易规则
+
+1. 必须先使用可用工具获取缺失数据；不得编造价格、新闻或技术指标。
+2. 买入必须结合总投资金额、已有持仓和当前价格控制仓位；A 股下单股数必须为 100 股整数倍，预算不足 100 股时买入列表为空。
+3. 卖出只能针对“持仓详情”中已经持有的股票，且下单股数不得超过持有股数。
+4. 委托价格必须是具体数字，不能写“市价”“附近”“区间”或解释性文字。
+5. 最终响应只允许输出买入列表和卖出列表，不要输出 JSON，不要输出 Markdown 代码块，不要输出分析理由。
+
+{skills_section}
+
+## 最终输出格式
+
+买入列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+卖出列表:
+- {{股票代码, 委托价格, 下单股数}}
+
+没有买入或卖出时，对应列表输出 []。
+
+{language_section}
+"""
 
 
 # ============================================================
@@ -406,6 +453,23 @@ def _build_language_section(report_language: str, *, chat_mode: bool = False) ->
         return """
 ## Output Language
 
+- Use the exact headings `Buy List:` and `Sell List:`.
+- Do not output JSON, code fences, analysis text, or explanations.
+- Empty buy/sell decisions must be written as `[]`.
+"""
+
+    return """
+## 输出语言
+
+- 使用固定标题 `买入列表:` 和 `卖出列表:`。
+- 不要输出 JSON、代码块、分析文字或解释。
+- 没有买入或卖出时，对应列表写 `[]`。
+"""
+
+    if normalized == "en":
+        return """
+## Output Language
+
 - Keep every JSON key unchanged.
 - `decision_type` must remain `buy|hold|sell`.
 - All human-readable JSON values must be written in English.
@@ -473,11 +537,7 @@ class AgentExecutor:
         stock_code = (context or {}).get("stock_code", "")
         market_role = get_market_role(stock_code, report_language)
         market_guidelines = get_market_guidelines(stock_code, report_language)
-        prompt_template = (
-            LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT
-            if self.use_legacy_default_prompt
-            else AGENT_SYSTEM_PROMPT
-        )
+        prompt_template = TRADE_ORDER_AGENT_SYSTEM_PROMPT
         system_prompt = prompt_template.format(
             market_role=market_role,
             market_guidelines=market_guidelines,
@@ -495,7 +555,7 @@ class AgentExecutor:
             {"role": "user", "content": self._build_user_message(task, context)},
         ]
 
-        return self._run_loop(messages, tool_decls, parse_dashboard=True)
+        return self._run_loop(messages, tool_decls, parse_dashboard=True, context=context)
 
     def chat(self, message: str, session_id: str, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None) -> AgentResult:
         """Execute the agent loop for a free-form chat message.
@@ -588,7 +648,14 @@ class AgentExecutor:
 
         return result
 
-    def _run_loop(self, messages: List[Dict[str, Any]], tool_decls: List[Dict[str, Any]], parse_dashboard: bool, progress_callback: Optional[Callable] = None) -> AgentResult:
+    def _run_loop(
+        self,
+        messages: List[Dict[str, Any]],
+        tool_decls: List[Dict[str, Any]],
+        parse_dashboard: bool,
+        progress_callback: Optional[Callable] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> AgentResult:
         """Delegate to the shared runner and adapt the result.
 
         This preserves the exact same observable behaviour as the original
@@ -607,7 +674,14 @@ class AgentExecutor:
         model_str = loop_result.model
 
         if parse_dashboard and loop_result.success:
-            dashboard = parse_dashboard_json(loop_result.content)
+            ctx = context or {}
+            dashboard = parse_trade_order_text(
+                loop_result.content,
+                stock_code=str(ctx.get("stock_code", "")),
+                stock_name=str(ctx.get("stock_name", "")),
+            )
+            if dashboard is None:
+                dashboard = parse_dashboard_json(loop_result.content)
             return AgentResult(
                 success=dashboard is not None,
                 content=loop_result.content,
@@ -617,7 +691,7 @@ class AgentExecutor:
                 total_tokens=loop_result.total_tokens,
                 provider=loop_result.provider,
                 model=model_str,
-                error=None if dashboard else "Failed to parse dashboard JSON from agent response",
+                error=None if dashboard else "Failed to parse trade order list from agent response",
             )
 
         return AgentResult(
@@ -637,14 +711,21 @@ class AgentExecutor:
         parts = [task]
         if context:
             report_language = normalize_report_language(context.get("report_language", "zh"))
+            total_amount = context.get("total_investment_amount")
+            holdings = context.get("holding_details") or []
+            parts.append(f"\n[账户约束]\n总投资金额: {int(total_amount or 0)}")
+            parts.append(f"持仓详情: {json.dumps(holdings, ensure_ascii=False, default=str)}")
+            parts.append("买入下单股数必须按 100 股整数倍生成；卖出股数不得超过对应持仓。")
             if context.get("stock_code"):
                 parts.append(f"\n股票代码: {context['stock_code']}")
             if context.get("report_type"):
                 parts.append(f"报告类型: {context['report_type']}")
             if report_language == "en":
-                parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
+                parts.append("输出语言: English（使用 Buy List / Sell List 标题，不输出 JSON）")
             else:
-                parts.append("输出语言: 中文（所有 JSON 键名保持不变，所有面向用户的文本值使用中文）")
+                parts.append("输出语言: 中文（使用买入列表/卖出列表标题，不输出 JSON）")
+
+            parts.append("最终输出只允许包含 `买入列表:` 与 `卖出列表:`，不要输出 JSON。")
 
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):
@@ -654,5 +735,5 @@ class AgentExecutor:
             if context.get("news_context"):
                 parts.append(f"\n[系统已获取的新闻与舆情情报]\n{context['news_context']}")
 
-        parts.append("\n请使用可用工具获取缺失的数据（如历史K线、新闻等），然后以决策仪表盘 JSON 格式输出分析结果。")
+        parts.append("\n请使用可用工具获取缺失的数据（如历史 K 线、新闻、情报和筹码信息），然后只输出交易委托清单：买入列表与卖出列表。")
         return "\n".join(parts)

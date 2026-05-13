@@ -248,10 +248,71 @@ class NotificationService(
         report_date: Optional[str] = None,
     ) -> str:
         """Generate the aggregate report content used by merge/save/push paths."""
+        trade_report = self._generate_trade_order_report(results, report_date=report_date)
+        if trade_report is not None:
+            return trade_report
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
             return self.generate_brief_report(results, report_date=report_date)
         return self.generate_dashboard_report(results, report_date=report_date)
+
+    @staticmethod
+    def _format_trade_order(order: Any) -> Optional[str]:
+        if isinstance(order, dict):
+            code = order.get("code")
+            price = order.get("price")
+            shares = order.get("shares")
+        elif isinstance(order, (list, tuple)) and len(order) >= 3:
+            code, price, shares = order[:3]
+        else:
+            return None
+        if not code or price in (None, "") or shares in (None, ""):
+            return None
+        return f"{{{code}, {price}, {shares}}}"
+
+    def _collect_trade_order_lines(self, results: List[AnalysisResult]) -> Optional[tuple[List[str], List[str]]]:
+        seen_trade_plan = False
+        buy_lines: List[str] = []
+        sell_lines: List[str] = []
+        for result in results or []:
+            dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+            trade_plan = dashboard.get("trade_plan")
+            if not isinstance(trade_plan, dict):
+                continue
+            seen_trade_plan = True
+            for order in trade_plan.get("buy_list") or []:
+                line = self._format_trade_order(order)
+                if line:
+                    buy_lines.append(line)
+            for order in trade_plan.get("sell_list") or []:
+                line = self._format_trade_order(order)
+                if line:
+                    sell_lines.append(line)
+        if not seen_trade_plan:
+            return None
+        return buy_lines, sell_lines
+
+    def _generate_trade_order_report(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+    ) -> Optional[str]:
+        collected = self._collect_trade_order_lines(results)
+        if collected is None:
+            return None
+        buy_lines, sell_lines = collected
+        lines = ["买入列表:"]
+        if buy_lines:
+            lines.extend(f"- {line}" for line in buy_lines)
+        else:
+            lines.append("[]")
+        lines.append("")
+        lines.append("卖出列表:")
+        if sell_lines:
+            lines.extend(f"- {line}" for line in sell_lines)
+        else:
+            lines.append("[]")
+        return "\n".join(lines)
 
     def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
         models: List[str] = []
@@ -812,6 +873,9 @@ class NotificationService(
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        trade_report = self._generate_trade_order_report(results, report_date=report_date)
+        if trade_report is not None:
+            return trade_report
         reason_label = "Rationale" if report_language == "en" else "操作理由"
         risk_warning_label = "Risk Warning" if report_language == "en" else "风险提示"
         technical_heading = "Technicals" if report_language == "en" else "技术面"
@@ -1107,6 +1171,9 @@ class NotificationService(
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        trade_report = self._generate_trade_order_report(results)
+        if trade_report is not None:
+            return trade_report
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
             out = render(
@@ -1352,6 +1419,9 @@ class NotificationService(
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
         config = get_config()
+        trade_report = self._generate_trade_order_report(results, report_date=report_date)
+        if trade_report is not None:
+            return trade_report
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
             out = render(
@@ -1406,6 +1476,9 @@ class NotificationService(
         report_date = datetime.now().strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
+        trade_report = self._generate_trade_order_report([result], report_date=report_date)
+        if trade_report is not None:
+            return trade_report
         signal_text, signal_emoji, _ = self._get_signal_level(result)
         dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
         core = dashboard.get('core_conclusion', {}) if dashboard else {}

@@ -321,9 +321,13 @@ jobs:
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
 
           # ==========================================
-          # 自选股配置
+          # 自动股票池与交易账户配置
           # ==========================================
-          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
+          POPULAR_STOCK_AUTO_ENABLED: ${{ vars.POPULAR_STOCK_AUTO_ENABLED || secrets.POPULAR_STOCK_AUTO_ENABLED || 'true' }}
+          POPULAR_STOCK_LIMIT: ${{ vars.POPULAR_STOCK_LIMIT || secrets.POPULAR_STOCK_LIMIT || '100' }}
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '' }}
+          TOTAL_INVESTMENT_AMOUNT: ${{ secrets.TOTAL_INVESTMENT_AMOUNT }}
+          HOLDING_DETAILS: ${{ secrets.HOLDING_DETAILS }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           
           # ==========================================
@@ -367,7 +371,9 @@ jobs:
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
           echo "🎯 运行模式: $MODE"
-          echo "📊 自选股: $STOCK_LIST"
+          echo "📊 股票池: 东方财富人气榜自动抓取（POPULAR_STOCK_LIMIT=${POPULAR_STOCK_LIMIT:-100}）"
+          echo "💰 总投资金额: $([ -n "$TOTAL_INVESTMENT_AMOUNT" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "📦 持仓详情: $([ -n "$HOLDING_DETAILS" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "📝 报告类型: $REPORT_TYPE"
           echo ""
           echo "=========================================="

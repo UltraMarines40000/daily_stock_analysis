@@ -177,6 +177,57 @@ def parse_env_float(
     return parsed
 
 
+def parse_holding_details(value: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse HOLDING_DETAILS into [{code, cost, shares}, ...].
+
+    Accepted examples:
+    - [["600519", 1680.5, 100], ["000001", 12.3, 500]]
+    - [{"code": "600519", "cost": 1680.5, "shares": 100}]
+    - 600519,1680.5,100;000001,12.3,500
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return []
+
+    def _normalize_item(item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, dict):
+            code = str(item.get("code") or item.get("stock_code") or item.get("股票代码") or "").strip().upper()
+            cost = item.get("cost", item.get("holding_cost", item.get("持有成本")))
+            shares = item.get("shares", item.get("volume", item.get("持有股数")))
+        elif isinstance(item, (list, tuple)) and len(item) >= 3:
+            code = str(item[0] or "").strip().upper()
+            cost = item[1]
+            shares = item[2]
+        else:
+            return None
+        if not code:
+            return None
+        try:
+            cost_value = float(cost)
+            shares_value = int(float(shares))
+        except (TypeError, ValueError):
+            logger.warning("忽略无效持仓项: %r", item)
+            return None
+        if shares_value <= 0:
+            return None
+        return {"code": code, "cost": cost_value, "shares": shares_value}
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return [item for item in (_normalize_item(i) for i in parsed) if item]
+        logger.warning("HOLDING_DETAILS JSON 必须是列表，已忽略")
+        return []
+    except json.JSONDecodeError:
+        items = []
+        for chunk in raw.split(";"):
+            parts = [part.strip() for part in chunk.split(",")]
+            normalized = _normalize_item(parts)
+            if normalized:
+                items.append(normalized)
+        return items
+
+
 def normalize_news_strategy_profile(value: Optional[str]) -> str:
     """Normalize news strategy profile to known values."""
     candidate = (value or "short").strip().lower()
@@ -588,6 +639,12 @@ class Config:
     
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
+    popular_stock_auto_enabled: bool = True
+    popular_stock_limit: int = 100
+
+    # === 交易账户配置 ===
+    total_investment_amount: int = 0
+    holding_details: List[Dict[str, Any]] = field(default_factory=list)
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -1311,6 +1368,42 @@ class Config:
         
         return cls(
             stock_list=stock_list,
+            popular_stock_auto_enabled=parse_env_bool(
+                cls._resolve_env_value(
+                    'POPULAR_STOCK_AUTO_ENABLED',
+                    default='true',
+                    prefer_env_file=True,
+                ),
+                True,
+            ),
+            popular_stock_limit=parse_env_int(
+                cls._resolve_env_value(
+                    'POPULAR_STOCK_LIMIT',
+                    default='100',
+                    prefer_env_file=True,
+                ),
+                100,
+                field_name='POPULAR_STOCK_LIMIT',
+                minimum=1,
+                maximum=100,
+            ),
+            total_investment_amount=parse_env_int(
+                cls._resolve_env_value(
+                    'TOTAL_INVESTMENT_AMOUNT',
+                    default='0',
+                    prefer_env_file=True,
+                ),
+                0,
+                field_name='TOTAL_INVESTMENT_AMOUNT',
+                minimum=0,
+            ),
+            holding_details=parse_holding_details(
+                cls._resolve_env_value(
+                    'HOLDING_DETAILS',
+                    default='',
+                    prefer_env_file=True,
+                )
+            ),
             feishu_app_id=os.getenv('FEISHU_APP_ID'),
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
@@ -2175,6 +2268,40 @@ class Config:
         1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
         2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
         """
+        self.total_investment_amount = parse_env_int(
+            os.getenv('TOTAL_INVESTMENT_AMOUNT'),
+            getattr(self, "total_investment_amount", 0),
+            field_name='TOTAL_INVESTMENT_AMOUNT',
+            minimum=0,
+        )
+        self.holding_details = parse_holding_details(
+            os.getenv('HOLDING_DETAILS')
+        ) or getattr(self, "holding_details", [])
+
+        auto_enabled = parse_env_bool(
+            os.getenv('POPULAR_STOCK_AUTO_ENABLED'),
+            getattr(self, "popular_stock_auto_enabled", True),
+        )
+        if auto_enabled:
+            limit = parse_env_int(
+                os.getenv('POPULAR_STOCK_LIMIT'),
+                getattr(self, "popular_stock_limit", 100),
+                field_name='POPULAR_STOCK_LIMIT',
+                minimum=1,
+                maximum=100,
+            )
+            try:
+                from popular_stock import get_eastmoney_popularity_codes
+
+                popular_codes = get_eastmoney_popularity_codes(limit=limit)
+                if popular_codes:
+                    self.stock_list = popular_codes
+                    logger.info("已自动加载东方财富人气榜前 %s 名股票作为分析列表", len(popular_codes))
+                    return
+                logger.warning("东方财富人气榜返回空列表，回退到 STOCK_LIST")
+            except Exception as exc:
+                logger.warning("加载东方财富人气榜失败，回退到 STOCK_LIST: %s", exc)
+
         # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
         # 也能获取到最新的股票列表配置
         env_file = os.getenv("ENV_FILE")
