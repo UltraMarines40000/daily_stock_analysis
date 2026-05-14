@@ -2291,8 +2291,48 @@ class Config:
         if not popular_codes:
             raise RuntimeError("东方财富人气榜返回空股票池，任务终止")
 
-        self.stock_list = popular_codes
-        logger.info("已自动加载东方财富人气榜前 %s 名股票作为分析列表", len(popular_codes))
+        from data_provider.base import normalize_stock_code
+
+        holding_codes: List[str] = []
+        for item in self.holding_details:
+            raw_code = str(item.get("code") or "").strip()
+            if not raw_code:
+                continue
+            normalized_code = normalize_stock_code(raw_code)
+            if normalized_code:
+                holding_codes.append(normalized_code)
+
+        combined_codes: List[str] = []
+        seen_codes: set[str] = set()
+        for code in [*popular_codes, *holding_codes]:
+            normalized_code = normalize_stock_code(str(code or "").strip())
+            if not normalized_code:
+                continue
+            code_key = normalized_code.upper()
+            if code_key in seen_codes:
+                continue
+            seen_codes.add(code_key)
+            combined_codes.append(normalized_code)
+
+        popular_code_keys = {
+            normalize_stock_code(str(code or "").strip()).upper()
+            for code in popular_codes
+            if str(code or "").strip()
+        }
+        holding_code_keys = {
+            normalize_stock_code(str(code or "").strip()).upper()
+            for code in holding_codes
+            if str(code or "").strip()
+        }
+        appended_holding_count = len(holding_code_keys - popular_code_keys)
+
+        self.stock_list = combined_codes
+        logger.info(
+            "已自动加载东方财富人气榜前 %s 名股票，并补充持仓股票 %s 只，最终分析列表 %s 只",
+            len(popular_codes),
+            appended_holding_count,
+            len(combined_codes),
+        )
     
     def validate_structured(self) -> List[ConfigIssue]:
         """Return structured validation issues with severity levels.
