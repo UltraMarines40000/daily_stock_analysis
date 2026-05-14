@@ -1722,6 +1722,16 @@ Only output orders with concrete numeric price and share count. Never invent mis
         total_investment = int(getattr(config, "total_investment_amount", 0) or 0)
         holdings = getattr(config, "holding_details", []) or []
 
+        from data_provider.base import normalize_stock_code
+
+        holding_by_code: Dict[str, Dict[str, Any]] = {}
+        for holding in holdings:
+            if not isinstance(holding, dict):
+                continue
+            holding_code = normalize_stock_code(str(holding.get("code") or "").strip())
+            if holding_code:
+                holding_by_code[holding_code.upper()] = holding
+
         compact_candidates: List[Dict[str, Any]] = []
         for item in candidates:
             context = item.get("context") if isinstance(item.get("context"), dict) else {}
@@ -1729,13 +1739,23 @@ Only output orders with concrete numeric price and share count. Never invent mis
             realtime = context.get("realtime") if isinstance(context.get("realtime"), dict) else {}
             trend = context.get("trend_analysis") if isinstance(context.get("trend_analysis"), dict) else {}
             chip = context.get("chip") if isinstance(context.get("chip"), dict) else {}
+            candidate_code = item.get("code") or context.get("code")
+            candidate_key = normalize_stock_code(str(candidate_code or "").strip()).upper()
+            current_holding = holding_by_code.get(candidate_key)
+            is_holding = current_holding is not None
             news_text = str(item.get("news_context") or "")
             if len(news_text) > 1200:
                 news_text = news_text[:1200] + "\n...[truncated]"
             compact_candidates.append(
                 {
-                    "code": item.get("code") or context.get("code"),
+                    "code": candidate_code,
                     "name": item.get("name") or context.get("stock_name"),
+                    "is_holding": is_holding,
+                    "trade_role": "existing_position_hold_or_sell" if is_holding else "new_buy_candidate",
+                    "buy_eligible": not is_holding,
+                    "sell_eligible": is_holding,
+                    "holding_cost": current_holding.get("cost") if current_holding else None,
+                    "holding_shares": current_holding.get("shares") if current_holding else None,
                     "price": realtime.get("price") or today.get("close"),
                     "change_pct": realtime.get("change_pct") or today.get("pct_chg"),
                     "volume_ratio": realtime.get("volume_ratio"),
@@ -1774,10 +1794,11 @@ You must make one global decision across all candidates. Do not decide stock by 
 {json.dumps(compact_candidates, ensure_ascii=False, default=str, indent=2)}
 
 ## Rules
-- Rank all candidates globally before allocating capital.
-- Buy orders must fit the total account budget and current holdings.
+- Treat stocks with `is_holding=true` as existing positions only. Decide whether to keep holding or sell them; never create buy/add orders for them.
+- Buy orders may only use stocks with `buy_eligible=true` and `is_holding=false`.
+- Sell orders may only use stocks with `sell_eligible=true` and must not exceed `holding_shares`.
+- Rank buy-eligible stocks globally before allocating new capital.
 - A-share buy quantities must be multiples of 100 shares.
-- Sell orders may only use stocks in holding details and must not exceed held shares.
 - Output concrete limit prices and share counts only.
 
 ## Final output
@@ -1798,10 +1819,11 @@ If there is no buy or no sell action, state that directly and explain why."""
 {json.dumps(compact_candidates, ensure_ascii=False, default=str, indent=2)}
 
 ## 决策规则
-- 先对所有候选股票做全局排序，再分配资金。
-- 买入总金额必须受总投资金额和现有持仓约束。
+- `is_holding=true` 的股票是已有持仓，只能判断继续持有或卖出，绝对不要对它们生成买入/加仓委托。
+- 买入委托只能从 `buy_eligible=true` 且 `is_holding=false` 的股票中选择。
+- 卖出委托只能从 `sell_eligible=true` 的持仓股票中选择，卖出股数不得超过 `holding_shares`。
+- 只对可买入股票做全局排序后再分配新增资金。
 - A 股买入股数必须是 100 股整数倍。
-- 卖出只能针对持仓详情中已有股票，卖出股数不得超过持有股数。
 - 委托价格和下单股数必须是明确数字。
 
 ## 最终输出
